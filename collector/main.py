@@ -1,5 +1,8 @@
 """
 Collector — corre cada COLLECT_INTERVAL_MINUTES minutos.
+Flujo:
+  1. get_scoreboard_maps  → lista de partidas (IDs)
+  2. get_map_scoreboard?map_id=X → stats de jugadores por partida
 """
 import asyncio
 import os
@@ -16,8 +19,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CRCON_URL     = os.environ["CRCON_URL"].rstrip("/")
-CRCON_API_KEY = os.environ["CRCON_API_KEY"]
+CRCON_URL     = os.environ["CRCON_URL"].rstrip("/")   # ej: http://IP:7010
+CRCON_API_KEY = os.environ.get("CRCON_API_KEY", "")   # opcional en el 7010
 INTERVAL      = int(os.environ.get("COLLECT_INTERVAL_MINUTES", 30)) * 60
 
 DB_DSN = (
@@ -25,10 +28,10 @@ DB_DSN = (
     f"@{os.environ['DB_HOST']}:{os.environ['DB_PORT']}/{os.environ['DB_NAME']}"
 )
 
-HEADERS = {
-    "Authorization": f"Bearer {CRCON_API_KEY}",
-    "Content-Type": "application/json",
-}
+# Headers opcionales (7010 puede no necesitar auth)
+HEADERS = {"Content-Type": "application/json"}
+if CRCON_API_KEY:
+    HEADERS["Authorization"] = f"Bearer {CRCON_API_KEY}"
 
 
 def parse_dt(s):
@@ -46,7 +49,16 @@ async def fetch_scoreboard_maps(session: aiohttp.ClientSession, page: int = 1) -
         return data.get("result", {})
 
 
-async def process_maps(pool: asyncpg.Pool, maps: list) -> int:
+async def fetch_map_scoreboard(session: aiohttp.ClientSession, map_id: int) -> dict:
+    url = f"{CRCON_URL}/api/get_map_scoreboard"
+    async with session.get(url, params={"map_id": map_id}) as resp:
+        data = await resp.json()
+        if data.get("failed"):
+            raise RuntimeError(f"get_map_scoreboard({map_id}) falló: {data.get('error')}")
+        return data.get("result", {})
+
+
+async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps: list) -> int:
     new_count = 0
 
     async with pool.acquire() as conn:
@@ -55,18 +67,21 @@ async def process_maps(pool: asyncpg.Pool, maps: list) -> int:
             if not match_id:
                 continue
 
+            # Ya procesada?
             exists = await conn.fetchval(
                 "SELECT 1 FROM matches WHERE match_id = $1", match_id
             )
             if exists:
                 continue
 
+            # Datos básicos del mapa
             map_info     = m.get("map") or {}
             map_name     = map_info.get("pretty_name") or map_info.get("id", "?")
             result       = m.get("result") or {}
             allied_score = result.get("allied")
             axis_score   = result.get("axis")
 
+            # Insertar la partida
             await conn.execute(
                 """
                 INSERT INTO matches (match_id, map_name, start_time, end_time, allied_score, axis_score)
@@ -81,11 +96,24 @@ async def process_maps(pool: asyncpg.Pool, maps: list) -> int:
                 axis_score,
             )
 
-            players = m.get("player_stats") or []
+            # Buscar stats detallados con get_map_scoreboard
+            try:
+                detail = await fetch_map_scoreboard(session, int(match_id))
+                players = detail.get("player_stats") or []
+            except Exception as e:
+                log.warning(f"  No se pudieron obtener stats de partida {match_id}: {e}")
+                players = []
+
             for p in players:
-                steam_id = p.get("player_id") or p.get("steam_id_64", "")
+                steam_id = p.get("player_id", "")
                 if not steam_id:
                     continue
+
+                # Filtrar jugadores con tiempo negativo o 0 (conexiones fallidas)
+                time_sec = int(p.get("time_seconds") or 0)
+                if time_sec <= 0:
+                    continue
+
                 await conn.execute(
                     """
                     INSERT INTO match_player_stats
@@ -96,19 +124,23 @@ async def process_maps(pool: asyncpg.Pool, maps: list) -> int:
                     """,
                     match_id,
                     steam_id,
-                    p.get("player") or p.get("name", ""),
-                    int(p.get("kills", 0)),
-                    int(p.get("deaths", 0)),
-                    int(p.get("teamkills", 0) or p.get("team_kills", 0)),
-                    int(p.get("combat", 0)    or p.get("combat_score", 0)),
-                    int(p.get("offense", 0)   or p.get("offense_score", 0)),
-                    int(p.get("defense", 0)   or p.get("defense_score", 0)),
-                    int(p.get("support", 0)   or p.get("support_score", 0)),
-                    int(p.get("time_seconds", 0)),
+                    p.get("player", ""),
+                    int(p.get("kills") or 0),
+                    int(p.get("deaths") or 0),
+                    int(p.get("teamkills") or 0),
+                    int(p.get("combat") or 0),
+                    int(p.get("offense") or 0),
+                    int(p.get("defense") or 0),
+                    int(p.get("support") or 0),
+                    time_sec,
                 )
 
+            player_count = len([p for p in players if int(p.get("time_seconds") or 0) > 0])
+            log.info(f"  Nueva: [{match_id}] {map_name} — {player_count} jugadores")
             new_count += 1
-            log.info(f"  Nueva: [{match_id}] {map_name} ({allied_score}-{axis_score})")
+
+            # Pequeña pausa para no martillar la API
+            await asyncio.sleep(0.3)
 
     return new_count
 
@@ -120,13 +152,37 @@ async def run():
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         while True:
             try:
-                log.info("Consultando get_scoreboard_maps...")
-                result = await fetch_scoreboard_maps(session, page=1)
-                maps   = result.get("maps", [])
-                total  = result.get("total", 0)
-                log.info(f"  {total} partidas en CRCON, procesando página 1 ({len(maps)} partidas)...")
-                new = await process_maps(pool, maps)
-                log.info(f"  {new} partidas nuevas guardadas")
+                total_new = 0
+                page = 1
+
+                while True:
+                    log.info(f"Consultando get_scoreboard_maps página {page}...")
+                    result    = await fetch_scoreboard_maps(session, page=page)
+                    maps      = result.get("maps", [])
+                    total     = result.get("total", 0)
+                    page_size = result.get("page_size", 100)
+
+                    if not maps:
+                        break
+
+                    log.info(f"  Página {page}: {len(maps)} partidas (total CRCON: {total})")
+                    new = await process_maps(pool, session, maps)
+                    total_new += new
+
+                    # Si ninguna partida de esta página era nueva, las siguientes
+                    # tampoco lo serán (ordenadas de más nueva a más vieja)
+                    if new == 0:
+                        log.info("  No hay más partidas nuevas, deteniendo paginación")
+                        break
+
+                    # Si ya procesamos todas las páginas
+                    if page * page_size >= total:
+                        break
+
+                    page += 1
+
+                log.info(f"Total partidas nuevas guardadas: {total_new}")
+
             except Exception as e:
                 log.error(f"Error en ciclo: {e}", exc_info=True)
 

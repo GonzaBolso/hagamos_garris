@@ -11,6 +11,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -25,14 +27,14 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      CRCON_URL: ${CRCON_URL}
-      CRCON_API_KEY: ${CRCON_API_KEY}
+      CRCON_URL: ${CRCON_PUBLIC_URL}       # 7010 sin auth
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       COLLECT_INTERVAL_MINUTES: ${COLLECT_INTERVAL_MINUTES:-30}
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
 
   bot:
     build: ./bot
@@ -44,13 +46,14 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       GUILD_ID: ${GUILD_ID}
-      CRCON_URL: ${CRCON_URL}
+      CRCON_URL: ${CRCON_URL}              # 8010 con auth
       CRCON_API_KEY: ${CRCON_API_KEY}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
 
 volumes:
   postgres_data:

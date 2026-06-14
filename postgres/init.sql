@@ -1,7 +1,7 @@
 -- ── Usuarios vinculados Discord <-> Steam ────────────────────
 CREATE TABLE IF NOT EXISTS linked_players (
     discord_id      BIGINT PRIMARY KEY,
-    steam_id        VARCHAR(20) NOT NULL UNIQUE,
+    steam_id        VARCHAR(64) NOT NULL UNIQUE,
     discord_name    VARCHAR(100),
     linked_at       TIMESTAMPTZ DEFAULT NOW()
 );
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS matches (
 CREATE TABLE IF NOT EXISTS match_player_stats (
     id              SERIAL PRIMARY KEY,
     match_id        VARCHAR(64) REFERENCES matches(match_id) ON DELETE CASCADE,
-    steam_id        VARCHAR(20) NOT NULL,
+    steam_id        VARCHAR(64) NOT NULL,
     player_name     VARCHAR(100),
     kills           INT DEFAULT 0,
     deaths          INT DEFAULT 0,
