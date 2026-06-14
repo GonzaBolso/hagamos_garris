@@ -1,24 +1,97 @@
 """
 commands/hll.py
-Grupo /hll con subcomandos: registro, help, server, online, top, vip
+Grupo /hll con subcomandos: registro, help, server, online, top, vip, setchannel, setroles
 """
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from api import crcon, CRCONError
+from checks import admin_only, player_or_admin
 
 
 def setup_hll(bot: commands.Bot, pool):
     group = app_commands.Group(name="hll", description="Comandos de Hell Let Loose")
 
-    # ── /hll registro <steam_id> ──────────────────────────────
+    # ── /hll setchannel ───────────────────────────────────────
+    @group.command(name="setchannel", description="[Admin] Configura el canal para comandos de jugadores")
+    @app_commands.describe(canal="Canal donde los jugadores podrán usar los comandos")
+    @admin_only()
+    async def setchannel(interaction: discord.Interaction, canal: discord.TextChannel):
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO guild_config (guild_id, stats_channel_id)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id) DO UPDATE SET stats_channel_id = $2, updated_at = NOW()
+                """,
+                interaction.guild_id, canal.id
+            )
+        await interaction.response.send_message(
+            f"✅ Canal configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí.",
+            ephemeral=True
+        )
+
+    # ── /hll setroles ─────────────────────────────────────────
+    @group.command(name="setroles", description="[Admin] Configura los roles de admin y player")
+    @app_commands.describe(
+        admin="Rol que puede usar todos los comandos en cualquier canal",
+        player="Rol que puede usar comandos en el canal configurado"
+    )
+    @admin_only()
+    async def setroles(interaction: discord.Interaction,
+                       admin: discord.Role,
+                       player: discord.Role):
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO guild_config (guild_id, admin_role_id, mod_role_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id) DO UPDATE
+                    SET admin_role_id = $2, mod_role_id = $3, updated_at = NOW()
+                """,
+                interaction.guild_id, admin.id, player.id
+            )
+        await interaction.response.send_message(
+            f"✅ Roles configurados:\n"
+            f"Admin: {admin.mention}\n"
+            f"Player: {player.mention}",
+            ephemeral=True
+        )
+
+    # ── /hll config ───────────────────────────────────────────
+    @group.command(name="config", description="[Admin] Muestra la configuración actual")
+    @admin_only()
+    async def config(interaction: discord.Interaction):
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM guild_config WHERE guild_id = $1", interaction.guild_id
+            )
+
+        if not row:
+            await interaction.response.send_message(
+                "⚠️ No hay configuración todavía. Usá `/hll setchannel` y `/hll setroles`.",
+                ephemeral=True
+            )
+            return
+
+        channel = interaction.guild.get_channel(row["stats_channel_id"]) if row["stats_channel_id"] else None
+        admin_role  = interaction.guild.get_role(row["admin_role_id"])  if row["admin_role_id"]  else None
+        player_role = interaction.guild.get_role(row["mod_role_id"])    if row["mod_role_id"]    else None
+
+        embed = discord.Embed(title="⚙️ Configuración del Bot", color=0x5865F2)
+        embed.add_field(name="Canal jugadores", value=channel.mention  if channel     else "No configurado", inline=False)
+        embed.add_field(name="Rol Admin",       value=admin_role.mention  if admin_role  else "No configurado", inline=True)
+        embed.add_field(name="Rol Player",      value=player_role.mention if player_role else "No configurado", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── /hll registro ─────────────────────────────────────────
     @group.command(name="registro", description="Vinculá tu cuenta de Discord con tu Steam ID")
     @app_commands.describe(steam_id="Tu Steam ID de 64 bits (ej: 76561198XXXXXXXXX)")
+    @player_or_admin()
     async def registro(interaction: discord.Interaction, steam_id: str):
         await interaction.response.defer(ephemeral=True)
 
-        # Validación básica
         if not steam_id.isdigit() or len(steam_id) != 17:
             await interaction.followup.send(
                 "❌ Steam ID inválido. Debe tener 17 dígitos.\n"
@@ -27,13 +100,12 @@ def setup_hll(bot: commands.Bot, pool):
             return
 
         async with pool.acquire() as conn:
-            # Ver si ya está vinculado otro usuario con ese steam_id
             existing = await conn.fetchrow(
                 "SELECT discord_id FROM linked_players WHERE steam_id = $1", steam_id
             )
             if existing and existing["discord_id"] != interaction.user.id:
                 await interaction.followup.send(
-                    "❌ Ese Steam ID ya está vinculado a otra cuenta de Discord.", ephemeral=True
+                    "❌ Ese Steam ID ya está vinculado a otra cuenta.", ephemeral=True
                 )
                 return
 
@@ -44,9 +116,7 @@ def setup_hll(bot: commands.Bot, pool):
                 ON CONFLICT (discord_id) DO UPDATE
                   SET steam_id = $2, discord_name = $3
                 """,
-                interaction.user.id,
-                steam_id,
-                str(interaction.user),
+                interaction.user.id, steam_id, str(interaction.user),
             )
 
         await interaction.followup.send(
@@ -57,13 +127,13 @@ def setup_hll(bot: commands.Bot, pool):
 
     # ── /hll perfil ───────────────────────────────────────────
     @group.command(name="perfil", description="Muestra tu perfil en CRCON")
+    @player_or_admin()
     async def perfil(interaction: discord.Interaction):
         await interaction.response.defer()
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT steam_id FROM linked_players WHERE discord_id = $1",
-                interaction.user.id
+                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
             )
         if not row:
             await interaction.followup.send(
@@ -90,16 +160,17 @@ def setup_hll(bot: commands.Bot, pool):
         is_vip    = any(v.get("player_id") == row["steam_id"] for v in (vips or []))
 
         embed = discord.Embed(title=f"👤 {last_name}", color=0x2f3136)
-        embed.add_field(name="Steam ID",   value=f"`{row['steam_id']}`",  inline=True)
-        embed.add_field(name="VIP",        value="⭐ Sí" if is_vip else "No", inline=True)
-        embed.add_field(name="Sesiones",   value=str(sessions),           inline=True)
-        embed.add_field(name="Horas totales", value=f"{total_h}h",        inline=True)
-        embed.add_field(name="Flags",      value=flags,                   inline=True)
+        embed.add_field(name="Steam ID",      value=f"`{row['steam_id']}`",       inline=True)
+        embed.add_field(name="VIP",           value="⭐ Sí" if is_vip else "No",  inline=True)
+        embed.add_field(name="Sesiones",      value=str(sessions),                inline=True)
+        embed.add_field(name="Horas totales", value=f"{total_h}h",               inline=True)
+        embed.add_field(name="Flags",         value=flags,                        inline=True)
         embed.set_footer(text=f"Discord: {interaction.user}")
         await interaction.followup.send(embed=embed)
 
     # ── /hll server ───────────────────────────────────────────
     @group.command(name="server", description="Estado actual del servidor")
+    @player_or_admin()
     async def server(interaction: discord.Interaction):
         await interaction.response.defer()
         try:
@@ -119,19 +190,19 @@ def setup_hll(bot: commands.Bot, pool):
         max_players  = slots.get("max_players", 100) if slots else 100
 
         embed = discord.Embed(title="🖥️ Estado del Servidor", color=0x57F287)
-        embed.add_field(name="🗺️ Mapa actual", value=current_map, inline=False)
-        embed.add_field(name="⏭️ Próximo mapa", value=next_map,   inline=False)
+        embed.add_field(name="🗺️ Mapa actual",    value=current_map, inline=False)
+        embed.add_field(name="⏭️ Próximo mapa",   value=next_map,    inline=False)
         embed.add_field(name="👥 Jugadores",
                         value=f"{allied + axis}/{max_players} (Aliados: {allied} | Eje: {axis})",
                         inline=False)
         embed.add_field(name="🏆 Score",
-                        value=f"Aliados {score_allied} — {score_axis} Eje",
-                        inline=True)
+                        value=f"Aliados {score_allied} — {score_axis} Eje", inline=True)
         embed.add_field(name="⏱️ Tiempo restante", value=str(time_rem), inline=True)
         await interaction.followup.send(embed=embed)
 
     # ── /hll online ───────────────────────────────────────────
     @group.command(name="online", description="Jugadores conectados ahora")
+    @player_or_admin()
     async def online(interaction: discord.Interaction):
         await interaction.response.defer()
         try:
@@ -144,13 +215,10 @@ def setup_hll(bot: commands.Bot, pool):
             await interaction.followup.send("No hay jugadores conectados.")
             return
 
-        names = [p.get("name", "?") for p in players[:50]]
+        names  = [p.get("name", "?") for p in players[:50]]
         chunks = [names[i:i+25] for i in range(0, len(names), 25)]
 
-        embed = discord.Embed(
-            title=f"🟢 {len(players)} jugadores conectados",
-            color=0x57F287
-        )
+        embed = discord.Embed(title=f"🟢 {len(players)} jugadores conectados", color=0x57F287)
         for i, chunk in enumerate(chunks):
             embed.add_field(
                 name="\u200b" if i > 0 else "Jugadores",
@@ -161,13 +229,13 @@ def setup_hll(bot: commands.Bot, pool):
 
     # ── /hll vip ──────────────────────────────────────────────
     @group.command(name="vip", description="Verificá si tenés VIP")
+    @player_or_admin()
     async def vip(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT steam_id FROM linked_players WHERE discord_id = $1",
-                interaction.user.id
+                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
             )
         if not row:
             await interaction.followup.send(
@@ -200,14 +268,15 @@ def setup_hll(bot: commands.Bot, pool):
         cantidad="Cuántos jugadores mostrar (máx 20)"
     )
     @app_commands.choices(categoria=[
-        app_commands.Choice(name="Kills",     value="total_kills"),
-        app_commands.Choice(name="K/D",       value="kd_ratio"),
-        app_commands.Choice(name="Partidas",  value="matches_played"),
-        app_commands.Choice(name="Combat",    value="total_combat"),
-        app_commands.Choice(name="Offense",   value="total_offense"),
-        app_commands.Choice(name="Defense",   value="total_defense"),
-        app_commands.Choice(name="Support",   value="total_support"),
+        app_commands.Choice(name="Kills",    value="total_kills"),
+        app_commands.Choice(name="K/D",      value="kd_ratio"),
+        app_commands.Choice(name="Partidas", value="matches_played"),
+        app_commands.Choice(name="Combat",   value="total_combat"),
+        app_commands.Choice(name="Offense",  value="total_offense"),
+        app_commands.Choice(name="Defense",  value="total_defense"),
+        app_commands.Choice(name="Support",  value="total_support"),
     ])
+    @player_or_admin()
     async def top(interaction: discord.Interaction,
                   categoria: app_commands.Choice[str],
                   cantidad: int = 10):
@@ -228,7 +297,7 @@ def setup_hll(bot: commands.Bot, pool):
             )
 
         if not rows:
-            await interaction.followup.send("No hay datos todavía. El collector aún no procesó partidas.")
+            await interaction.followup.send("No hay datos todavía.")
             return
 
         medals = ["🥇", "🥈", "🥉"]
@@ -252,22 +321,18 @@ def setup_hll(bot: commands.Bot, pool):
     @group.command(name="help", description="Lista de comandos disponibles")
     async def help_cmd(interaction: discord.Interaction):
         embed = discord.Embed(title="📖 Comandos HLL Bot", color=0x5865F2)
-        embed.add_field(name="/hll registro <steam_id>",
-                        value="Vincula tu Discord con tu Steam ID", inline=False)
-        embed.add_field(name="/hll perfil",
-                        value="Tu perfil en CRCON (sesiones, horas, flags, VIP)", inline=False)
-        embed.add_field(name="/hll server",
-                        value="Estado del servidor (mapa, jugadores, score)", inline=False)
-        embed.add_field(name="/hll online",
-                        value="Jugadores conectados ahora mismo", inline=False)
-        embed.add_field(name="/hll vip",
-                        value="Verificá si tenés VIP activo", inline=False)
-        embed.add_field(name="/hll top <categoria> [cantidad]",
-                        value="Ranking histórico: Kills, K/D, Partidas, Combat, etc.", inline=False)
-        embed.add_field(name="/stats show",
-                        value="Tus stats acumulados", inline=False)
-        embed.add_field(name="/stats games [cantidad]",
-                        value="Tus últimas N partidas", inline=False)
+        embed.add_field(name="/hll registro <steam_id>", value="Vincula tu Discord con tu Steam ID", inline=False)
+        embed.add_field(name="/hll perfil",              value="Tu perfil en CRCON (sesiones, horas, VIP)", inline=False)
+        embed.add_field(name="/hll server",              value="Estado del servidor (mapa, jugadores, score)", inline=False)
+        embed.add_field(name="/hll online",              value="Jugadores conectados ahora mismo", inline=False)
+        embed.add_field(name="/hll vip",                 value="Verificá si tenés VIP activo", inline=False)
+        embed.add_field(name="/hll top <categoria>",     value="Ranking histórico: Kills, K/D, Partidas, etc.", inline=False)
+        embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)
+        embed.add_field(name="/stats games [cantidad]",  value="Tus últimas N partidas", inline=False)
+        embed.add_field(name="── Admin ──",              value="\u200b", inline=False)
+        embed.add_field(name="/hll setchannel #canal",   value="Configura el canal para jugadores", inline=False)
+        embed.add_field(name="/hll setroles @admin @player", value="Configura los roles", inline=False)
+        embed.add_field(name="/hll config",              value="Muestra la configuración actual", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     bot.tree.add_command(group)
