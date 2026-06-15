@@ -1,6 +1,9 @@
 """api/crcon.py — Cliente HTTP para CRCON, solo lectura."""
+import logging
 import aiohttp
 import config
+
+log = logging.getLogger(__name__)
 
 
 class CRCONError(Exception):
@@ -12,9 +15,12 @@ class CRCONClient:
         self._session: aiohttp.ClientSession | None = None
 
     async def start(self):
+        log.info(f"CRCON URL: {config.CRCON_URL}")
+        log.info(f"API KEY (primeros 8 chars): {config.CRCON_API_KEY[:8]}...")
         self._session = aiohttp.ClientSession(headers={
-            "Authorization": f"Bearer {config.CRCON_API_KEY}",
+            "Authorization": f"bearer {config.CRCON_API_KEY}",
             "Content-Type": "application/json",
+            "Connection": "keep-alive",
         })
 
     async def close(self):
@@ -23,8 +29,10 @@ class CRCONClient:
 
     async def _get(self, endpoint: str, **params):
         url = f"{config.CRCON_URL}/api/{endpoint}"
+        log.debug(f"GET {url} params={params}")
         async with self._session.get(url, params=params or None) as resp:
             data = await resp.json()
+            log.debug(f"  -> failed={data.get('failed')} error={data.get('error')}")
             if data.get("failed"):
                 raise CRCONError(data.get("error", endpoint))
             return data.get("result")

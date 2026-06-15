@@ -14,7 +14,7 @@ from commands.hll import setup_hll
 from commands.stats import setup_stats
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [bot] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -36,6 +36,18 @@ class HLLBot(commands.Bot):
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         log.info("Slash commands sincronizados")
+
+    async def on_tree_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, discord.app_commands.CheckFailure):
+            return  # los checks ya enviaron su mensaje
+        log.error(f"Error en comando: {error}", exc_info=error)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Ocurrió un error inesperado.", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Ocurrió un error inesperado.", ephemeral=True)
+        except Exception:
+            pass
 
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")

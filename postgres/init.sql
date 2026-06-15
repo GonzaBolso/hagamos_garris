@@ -56,3 +56,15 @@ SELECT
     SUM(time_seconds)                               AS total_time_seconds
 FROM match_player_stats
 GROUP BY steam_id;
+
+-- ── Configuración del servidor de Discord ─────────────────────
+CREATE TABLE IF NOT EXISTS guild_config (
+    guild_id            BIGINT PRIMARY KEY,
+    stats_channel_id    BIGINT,
+    log_channel_id      BIGINT,
+    admin_role_id       BIGINT,
+    mod_role_id         BIGINT,
+    language            VARCHAR(5) DEFAULT 'es',
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
