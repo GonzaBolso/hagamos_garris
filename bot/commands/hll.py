@@ -2,12 +2,35 @@
 commands/hll.py
 Grupo /hll con subcomandos: registro, help, server, online, top, vip, setchannel, setroles
 """
+from datetime import datetime
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from api import crcon, CRCONError
 from checks import admin_only, player_or_admin
+
+
+def country_to_flag(code: str) -> str:
+    """Convierte un código ISO de país (ej: 'UY') a su emoji de bandera."""
+    if not code or len(code) != 2:
+        return ""
+    code = code.upper()
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in code)
+
+
+def format_vip_expiration(expiration: str) -> str:
+    """Convierte una fecha ISO de vencimiento VIP en texto legible (o 'permanente')."""
+    if not expiration:
+        return "Sin vencimiento"
+    if expiration.startswith("3000"):
+        return "Sin vencimiento (permanente)"
+    try:
+        dt = datetime.fromisoformat(expiration)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return expiration
 
 
 def setup_hll(bot: commands.Bot, pool):
@@ -181,9 +204,7 @@ def setup_hll(bot: commands.Bot, pool):
             embed.set_thumbnail(url=avatar)
 
         if is_vip and vip_exp:
-            # Vencimiento muy lejano (año 3000) = VIP permanente
-            permanente = vip_exp.startswith("3000")
-            vence_txt = "Sin vencimiento (permanente)" if permanente else vip_exp
+            vence_txt = format_vip_expiration(vip_exp)
             embed.description = f"**⭐ VIP Activo** — vence: {vence_txt}"
         elif is_vip:
             embed.description = "**⭐ VIP Activo**"
@@ -196,7 +217,8 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="⏱️ Horas jugadas", value=f"{total_h}h",        inline=True)
         embed.add_field(name="🔄 Sesiones",       value=str(sessions),        inline=True)
         if country:
-            embed.add_field(name="🌍 País", value=country, inline=True)
+            flag = country_to_flag(country)
+            embed.add_field(name="🌍 País", value=f"{flag} {country}".strip(), inline=True)
 
         if vac_banned:
             embed.add_field(name="⚠️ Atención", value="Cuenta con VAC ban registrado", inline=False)
