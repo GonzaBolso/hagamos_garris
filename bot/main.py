@@ -2,6 +2,7 @@
 Bot principal — conecta todo.
 """
 import asyncio
+import os
 import logging
 
 import asyncpg
@@ -13,12 +14,19 @@ from api import crcon
 from commands.hll import setup_hll
 from commands.stats import setup_stats
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [bot] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+# discord.py es muy ruidoso en DEBUG; lo dejamos en WARNING siempre,
+# salvo que se pida explícitamente con DISCORD_LOG_LEVEL
+discord_level = os.environ.get("DISCORD_LOG_LEVEL", "WARNING").upper()
+logging.getLogger("discord").setLevel(getattr(logging, discord_level, logging.WARNING))
 
 
 class HLLBot(commands.Bot):
@@ -37,17 +45,19 @@ class HLLBot(commands.Bot):
         await self.tree.sync(guild=guild)
         log.info("Slash commands sincronizados")
 
-    async def on_tree_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, discord.app_commands.CheckFailure):
-            return  # los checks ya enviaron su mensaje
-        log.error(f"Error en comando: {error}", exc_info=error)
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ Ocurrió un error inesperado.", ephemeral=True)
-            else:
-                await interaction.followup.send("❌ Ocurrió un error inesperado.", ephemeral=True)
-        except Exception:
-            pass
+        async def on_tree_error(interaction: discord.Interaction, error):
+            if isinstance(error, discord.app_commands.CheckFailure):
+                return  # los checks ya enviaron su propio mensaje
+            log.error(f"Error en comando: {error}", exc_info=error)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Ocurrió un error inesperado.", ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ Ocurrió un error inesperado.", ephemeral=True)
+            except Exception:
+                pass
+
+        self.tree.on_error = on_tree_error
 
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
