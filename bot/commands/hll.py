@@ -151,21 +151,60 @@ def setup_hll(bot: commands.Bot, pool):
             await interaction.followup.send("❌ Jugador no encontrado en CRCON.")
             return
 
-        names     = data.get("names", [{}])
-        last_name = names[0].get("name", "?") if names else "?"
-        sessions  = data.get("sessions_count", 0)
-        total_h   = round(data.get("total_playtime_seconds", 0) / 3600, 1)
-        flags     = " ".join(f.get("flag", "") for f in data.get("flags", [])) or "Ninguna"
-        vips      = await crcon.get_vip_ids()
-        is_vip    = any(v.get("player_id") == row["steam_id"] for v in (vips or []))
+        soldier   = data.get("soldier") or {}
+        last_name = soldier.get("name") or (data.get("names") or [{}])[0].get("name", "?")
+        level     = soldier.get("level")
+        clan_tag  = soldier.get("clan_tag")
 
-        embed = discord.Embed(title=f"👤 {last_name}", color=0x2f3136)
-        embed.add_field(name="Steam ID",      value=f"`{row['steam_id']}`",       inline=True)
-        embed.add_field(name="VIP",           value="⭐ Sí" if is_vip else "No",  inline=True)
-        embed.add_field(name="Sesiones",      value=str(sessions),                inline=True)
-        embed.add_field(name="Horas totales", value=f"{total_h}h",               inline=True)
-        embed.add_field(name="Flags",         value=flags,                        inline=True)
-        embed.set_footer(text=f"Discord: {interaction.user}")
+        sessions = data.get("sessions_count", 0)
+        total_h  = round(data.get("total_playtime_seconds", 0) / 3600, 1)
+
+        is_vip  = data.get("is_vip", False)
+        vips    = data.get("vips") or []
+        vip_exp = vips[0].get("expiration") if vips else None
+
+        steaminfo  = data.get("steaminfo") or {}
+        profile    = steaminfo.get("profile") or {}
+        avatar     = profile.get("avatarfull")
+        country    = steaminfo.get("country")
+        bans       = steaminfo.get("bans") or {}
+        vac_banned = bans.get("VACBanned", False)
+
+        # Color dinámico: VIP dorado, baneado rojo, normal azul Discord
+        color = 0xF1C40F if is_vip else (0xED4245 if vac_banned else 0x5865F2)
+
+        display_name = f"[{clan_tag}] {last_name}" if clan_tag else last_name
+
+        embed = discord.Embed(color=color)
+        embed.set_author(name=display_name, icon_url=avatar)
+        if avatar:
+            embed.set_thumbnail(url=avatar)
+
+        if is_vip and vip_exp:
+            # Vencimiento muy lejano (año 3000) = VIP permanente
+            permanente = vip_exp.startswith("3000")
+            vence_txt = "Sin vencimiento (permanente)" if permanente else vip_exp
+            embed.description = f"**⭐ VIP Activo** — vence: {vence_txt}"
+        elif is_vip:
+            embed.description = "**⭐ VIP Activo**"
+        else:
+            embed.description = "**Jugador**"
+
+        embed.add_field(name="🆔 Steam ID",      value=f"`{row['steam_id']}`", inline=False)
+        if level is not None:
+            embed.add_field(name="🎖️ Nivel", value=str(level), inline=True)
+        embed.add_field(name="⏱️ Horas jugadas", value=f"{total_h}h",        inline=True)
+        embed.add_field(name="🔄 Sesiones",       value=str(sessions),        inline=True)
+        if country:
+            embed.add_field(name="🌍 País", value=country, inline=True)
+
+        if vac_banned:
+            embed.add_field(name="⚠️ Atención", value="Cuenta con VAC ban registrado", inline=False)
+
+        embed.set_footer(
+            text=f"Vinculado a {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
         await interaction.followup.send(embed=embed)
 
     # ── /hll server ───────────────────────────────────────────
