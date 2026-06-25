@@ -442,8 +442,7 @@ def setup_hll(bot: commands.Bot, pool):
         await interaction.followup.send(f"✅ Snapshot enviado a {channel_mention}.", ephemeral=True)
 
     # ── /hll help ─────────────────────────────────────────────
-    @group.command(name="help", description="Lista de comandos disponibles")
-    async def help_cmd(interaction: discord.Interaction):
+    def _build_player_help_embed() -> discord.Embed:
         embed = discord.Embed(title="📖 Comandos HLL Bot", color=0x5865F2)
         embed.add_field(name="/hll registro <steam_id>", value="Vincula tu Discord con tu Steam ID", inline=False)
         embed.add_field(name="/hll perfil",              value="Tu perfil en CRCON (sesiones, horas, VIP)", inline=False)
@@ -451,19 +450,30 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll online",              value="Jugadores conectados ahora mismo", inline=False)
         embed.add_field(name="/hll vip",                 value="Verificá si tenés VIP activo", inline=False)
         embed.add_field(name="/hll top <categoria> [periodo]", value="Ranking: Kills, K/D, Partidas, etc. Período: histórico/día/semana/mes", inline=False)
+        embed.add_field(name="/hll desafio listar",      value="Muestra los desafíos activos", inline=False)
+        embed.add_field(name="/hll desafio progreso <id>", value="Ranking de progreso de un desafío", inline=False)
         embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)
         embed.add_field(name="/stats games [cantidad]",  value="Tus últimas N partidas", inline=False)
+        return embed
 
-        # La sección admin solo se muestra a quien efectivamente tiene
-        # permiso de Administrador (los comandos viven en /hlladmin, que
-        # Discord ya oculta del autocompletado para el resto).
-        if interaction.user.guild_permissions.administrator:
-            embed.add_field(name="── Admin (/hlladmin) ──",        value="\u200b", inline=False)
-            embed.add_field(name="/hlladmin snapshot [periodo]",   value="Manda ahora el resumen Top 10, sin esperar la hora programada", inline=False)
-            embed.add_field(name="/hlladmin setchannel #canal",    value="Configura el canal para jugadores y/o snapshots", inline=False)
-            embed.add_field(name="/hlladmin setroles @admin @player", value="Configura los roles", inline=False)
-            embed.add_field(name="/hlladmin config",               value="Muestra la configuración actual", inline=False)
+    @group.command(name="help", description="Lista de comandos disponibles")
+    async def help_cmd(interaction: discord.Interaction):
+        embed = _build_player_help_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # ── /hlladmin help ───────────────────────────────────────
+    @admin_group.command(name="help", description="Lista de TODOS los comandos (jugador + admin)")
+    @admin_only()
+    async def admin_help_cmd(interaction: discord.Interaction):
+        embed = _build_player_help_embed()
+        embed.add_field(name="── Admin (/hlladmin) ──",            value="\u200b", inline=False)
+        embed.add_field(name="/hlladmin snapshot [periodo]",       value="Manda ahora el resumen Top 10, sin esperar la hora programada", inline=False)
+        embed.add_field(name="/hlladmin setchannel #canal",        value="Configura el canal para jugadores y/o snapshots", inline=False)
+        embed.add_field(name="/hlladmin setroles @admin @player",  value="Configura los roles", inline=False)
+        embed.add_field(name="/hlladmin config",                   value="Muestra la configuración actual", inline=False)
+        embed.add_field(name="/hlladmin desafio metricas",         value="Lista las métricas disponibles para crear desafíos", inline=False)
+        embed.add_field(name="/hlladmin desafio crear",            value="Crea un desafío configurable", inline=False)
+        embed.add_field(name="/hlladmin desafio eliminar <id>",    value="Desactiva un desafío", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     return group, admin_group
