@@ -12,7 +12,7 @@ from api import crcon, CRCONError
 from checks import admin_only, player_or_admin
 from timeutils import parse_iso_to_local
 from leaderboards import (
-    fetch_leaderboard, build_leaderboard_embed,
+    TZ_UY, fetch_leaderboard, build_leaderboard_embed,
 )
 from snapshot_task import run_snapshot_manual
 
@@ -411,16 +411,32 @@ def setup_hll(bot: commands.Bot, pool):
         await interaction.followup.send(embed=embed)
 
     # ── /hlladmin snapshot ──────────────────────────────────────
-    @admin_group.command(name="snapshot", description="Manda ahora mismo el resumen de Top 10 (sin esperar la hora programada)")
-    @app_commands.describe(periodo="Qué resumen mandar: día, semana o mes")
+    @admin_group.command(name="snapshot", description="Manda el resumen de Top 10 de un período (hoy, o una fecha puntual)")
+    @app_commands.describe(
+        periodo="Qué resumen mandar: día, semana o mes",
+        fecha="Fecha de referencia en formato DD/MM/AAAA (ej: 20/06/2026). Si no se pasa, usa hoy/ahora."
+    )
     @app_commands.choices(periodo=[
         app_commands.Choice(name="Día",    value="day"),
         app_commands.Choice(name="Semana", value="week"),
         app_commands.Choice(name="Mes",    value="month"),
     ])
     @admin_only()
-    async def snapshot(interaction: discord.Interaction, periodo: app_commands.Choice[str] = None):
+    async def snapshot(interaction: discord.Interaction, periodo: app_commands.Choice[str] = None,
+                        fecha: str = None):
         await interaction.response.defer(ephemeral=True)
+
+        reference_date = None
+        if fecha:
+            try:
+                parsed = datetime.strptime(fecha.strip(), "%d/%m/%Y")
+                reference_date = parsed.replace(tzinfo=TZ_UY)
+            except ValueError:
+                await interaction.followup.send(
+                    "❌ Formato de fecha inválido. Usá DD/MM/AAAA (ej: 20/06/2026).",
+                    ephemeral=True
+                )
+                return
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -436,7 +452,8 @@ def setup_hll(bot: commands.Bot, pool):
 
         period_value = periodo.value if periodo else "day"
         await run_snapshot_manual(
-            interaction.client, pool, interaction.guild_id, row["snapshot_channel_id"], period_value
+            interaction.client, pool, interaction.guild_id, row["snapshot_channel_id"],
+            period_value, reference_date
         )
         channel_mention = f"<#{row['snapshot_channel_id']}>"
         await interaction.followup.send(f"✅ Snapshot enviado a {channel_mention}.", ephemeral=True)

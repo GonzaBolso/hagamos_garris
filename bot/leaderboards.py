@@ -55,9 +55,10 @@ def period_start(period_value: str, now: datetime = None) -> datetime:
     """
     Calcula el inicio del período de calendario en hora UY (UTC-3 fijo),
     con el mismo criterio que el DATE_TRUNC usado en el SQL:
-      - day:   hoy 00:00
-      - week:  lunes de esta semana, 00:00
-      - month: día 1 de este mes, 00:00
+      - day:   00:00 del día de 'now'
+      - week:  lunes 00:00 de la semana que contiene a 'now'
+      - month: día 1, 00:00 del mes que contiene a 'now'
+    Si 'now' no se pasa, usa el momento actual.
     """
     now = (now or datetime.now(TZ_UY)).astimezone(TZ_UY)
     if period_value == "day":
@@ -70,10 +71,34 @@ def period_start(period_value: str, now: datetime = None) -> datetime:
     return now
 
 
-async def fetch_leaderboard(pool, col: str, period_value: str, limit: int):
+def period_end(period_value: str, now: datetime = None) -> datetime:
+    """
+    Calcula el límite superior EXCLUSIVO del período (el inicio del
+    período siguiente), en hora UY. Usado junto a period_start() para
+    delimitar un rango cerrado de calendario (ej: un día completo de
+    00:00:00 a 23:59:59.999..., expresado como [inicio, inicio_siguiente)).
+    """
+    start = period_start(period_value, now)
+    if period_value == "day":
+        return start + timedelta(days=1)
+    if period_value == "week":
+        return start + timedelta(days=7)
+    if period_value == "month":
+        if start.month == 12:
+            return start.replace(year=start.year + 1, month=1)
+        return start.replace(month=start.month + 1)
+    return start
+
+
+async def fetch_leaderboard(pool, col: str, period_value: str, limit: int,
+                             reference_date: datetime = None):
     """
     Devuelve las filas del ranking para una columna/categoría y período dados.
     period_value: 'all' | 'day' | 'week' | 'month'
+    reference_date: si se pasa, el día/semana/mes se calcula en base a esa
+    fecha (hora UY) en vez de "ahora". Por ejemplo, period_value='week' con
+    reference_date=20/06/2026 devuelve la semana (lun-dom) que contiene esa
+    fecha, sin importar qué día es hoy.
     """
     if period_value == "all":
         async with pool.acquire() as conn:
@@ -88,12 +113,13 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int):
                 limit
             )
 
-    # Períodos de CALENDARIO (no ventana móvil), calculados en hora UY (UTC-3):
-    #   día   -> desde las 00:00 de hoy (hora UY)
-    #   semana-> desde el lunes 00:00 de esta semana (hora UY)
-    #   mes   -> desde el día 1, 00:00 de este mes (hora UY)
-    trunc_map = {"day": "day", "week": "week", "month": "month"}
-    trunc_unit = trunc_map[period_value]
+    # Períodos de CALENDARIO (no ventana móvil), calculados en hora UY (UTC-3).
+    # Rango cerrado-abierto [desde, hasta) para no depender de redondeos en
+    # el límite superior (ej: una partida que arranca 23:59:50 del último
+    # día del rango sigue entrando, porque 'hasta' es el inicio del período
+    # SIGUIENTE, no las 23:59:59 del mismo día).
+    desde = period_start(period_value, reference_date)
+    hasta = period_end(period_value, reference_date)
 
     async with pool.acquire() as conn:
         return await conn.fetch(
@@ -114,26 +140,27 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int):
                 SUM(mps.support_score)                              AS total_support
             FROM match_player_stats mps
             JOIN matches m ON m.match_id = mps.match_id
-            WHERE m.start_time >= (
-                DATE_TRUNC('{trunc_unit}', NOW() AT TIME ZONE 'America/Montevideo')
-                AT TIME ZONE 'America/Montevideo'
-            )
+            WHERE m.start_time >= $2 AND m.start_time < $3
             GROUP BY mps.steam_id
             ORDER BY {col} DESC NULLS LAST
             LIMIT $1
             """,
-            limit
+            limit, desde, hasta
         )
 
 
 def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: str,
                              limit: int, now_uy: datetime = None,
-                             include_links: bool = True) -> discord.Embed:
+                             include_links: bool = True,
+                             reference_date: datetime = None) -> discord.Embed:
     """
     Construye el embed de un ranking ya consultado (rows de fetch_leaderboard).
     include_links=False usa texto plano sin link a Steam (más corto): se usa
     en el snapshot automático, donde 7 embeds van en un solo mensaje y Discord
     limita el total combinado a 6000 caracteres.
+    reference_date: si se pasó al consultar (fetch_leaderboard), debe pasarse
+    también aquí para que el footer muestre el rango correcto (día/semana/mes
+    de esa fecha, no de "ahora").
     """
     _, color, icon, value_label = CATEGORY_BY_COLUMN.get(col, (categoria_name, 0xF1C40F, "🏆", categoria_name))
     period_label = PERIOD_LABELS.get(period_value, "Histórico")
@@ -172,27 +199,39 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
     if period_value == "all":
         footer_txt = "📊 Stats históricos acumulados • actualizado cada 30 min"
     else:
+        desde = period_start(period_value, reference_date)
+        hasta_exclusive = period_end(period_value, reference_date)
         now_uy = now_uy or datetime.now(TZ_UY)
-        desde = period_start(period_value, now_uy)
-        rango = f"Desde: {desde.strftime('%d/%m %H:%M:%S')} — Hasta: {now_uy.strftime('%d/%m %H:%M:%S')}"
-        footer_txt = f"📊 Stats {FOOTER_PERIOD_TEXT[period_value]} • calculado en vivo\n{rango}"
+
+        if reference_date is not None:
+            # Período de una fecha específica del pasado (o futuro): mostramos
+            # el rango completo de calendario, sin decir "calculado en vivo".
+            hasta_mostrar = min(hasta_exclusive, now_uy)  # no mostrar más allá de "ahora" si coincide con hoy
+            rango = f"Desde: {desde.strftime('%d/%m %H:%M:%S')} — Hasta: {hasta_mostrar.strftime('%d/%m %H:%M:%S')}"
+            footer_txt = f"📊 Stats {FOOTER_PERIOD_TEXT[period_value]} ({desde.strftime('%d/%m/%Y')})\n{rango}"
+        else:
+            rango = f"Desde: {desde.strftime('%d/%m %H:%M:%S')} — Hasta: {now_uy.strftime('%d/%m %H:%M:%S')}"
+            footer_txt = f"📊 Stats {FOOTER_PERIOD_TEXT[period_value]} • calculado en vivo\n{rango}"
 
     embed.set_footer(text=footer_txt)
     return embed
 
 
 async def build_all_category_embeds(pool, period_value: str, limit: int, now_uy: datetime = None,
-                                      include_links: bool = True):
+                                      include_links: bool = True, reference_date: datetime = None):
     """
     Corre fetch_leaderboard + build_leaderboard_embed para TODAS las categorías
     definidas en CATEGORIES, en orden. Devuelve una lista de embeds (omite
     categorías sin datos en ese período).
     include_links=False se usa para el snapshot automático (ver build_leaderboard_embed).
+    reference_date: ver fetch_leaderboard / build_leaderboard_embed.
     """
     embeds = []
     for name, col, *_ in CATEGORIES:
-        rows = await fetch_leaderboard(pool, col, period_value, limit)
+        rows = await fetch_leaderboard(pool, col, period_value, limit, reference_date)
         if not rows:
             continue
-        embeds.append(build_leaderboard_embed(rows, col, name, period_value, limit, now_uy, include_links))
+        embeds.append(build_leaderboard_embed(
+            rows, col, name, period_value, limit, now_uy, include_links, reference_date
+        ))
     return embeds

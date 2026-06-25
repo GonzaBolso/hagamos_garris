@@ -77,7 +77,8 @@ async def _get_current_map_start(crcon_client):
 
 
 async def _send_snapshot(bot, pool, guild_id: int, channel_id: int,
-                          period_value: str, title_prefix: str):
+                          period_value: str, title_prefix: str,
+                          reference_date: datetime = None):
     channel = bot.get_channel(channel_id)
     if channel is None:
         try:
@@ -86,7 +87,9 @@ async def _send_snapshot(bot, pool, guild_id: int, channel_id: int,
             log.warning(f"  No pude resolver el canal {channel_id} (guild {guild_id})")
             return
 
-    embeds = await build_all_category_embeds(pool, period_value, SNAPSHOT_LIMIT, include_links=False)
+    embeds = await build_all_category_embeds(
+        pool, period_value, SNAPSHOT_LIMIT, include_links=False, reference_date=reference_date
+    )
     if not embeds:
         log.info(f"  Sin datos para snapshot '{period_value}' en guild {guild_id}, se omite")
         return
@@ -139,20 +142,37 @@ async def run_snapshots_for_all_guilds(bot, pool, now_uy: datetime):
             )
 
 
-async def run_snapshot_manual(bot, pool, guild_id: int, channel_id: int, period_value: str):
+async def run_snapshot_manual(bot, pool, guild_id: int, channel_id: int, period_value: str,
+                               reference_date: datetime = None):
     """
     Dispara un solo snapshot (día/semana/mes) para UN guild puntual, sin
     pasar por las condiciones de día/hora ni la espera del mapa en curso.
     Pensado para ser llamado desde un comando admin (/hlladmin snapshot).
+
+    reference_date: si se pasa, el período (día/semana/mes) se calcula en
+    base a esa fecha en vez de "ahora" — permite pedir el snapshot de un
+    día/semana/mes pasado (o futuro) puntual.
     """
     now_uy = datetime.now(TZ_UY)
-    fecha_txt = now_uy.strftime("%d/%m/%Y")
-    title_map = {
-        "day":   f"📅 Resumen del día — {fecha_txt} (manual)",
-        "week":  f"🗓️ Resumen de la semana — {fecha_txt} (manual)",
-        "month": f"📆 Resumen del mes — {fecha_txt} (manual)",
-    }
-    await _send_snapshot(bot, pool, guild_id, channel_id, period_value, title_map[period_value])
+
+    if reference_date is not None:
+        fecha_ref_txt = reference_date.strftime("%d/%m/%Y")
+        title_map = {
+            "day":   f"📅 Resumen del día — {fecha_ref_txt} (manual)",
+            "week":  f"🗓️ Resumen de la semana que contiene el {fecha_ref_txt} (manual)",
+            "month": f"📆 Resumen del mes de {fecha_ref_txt} (manual)",
+        }
+    else:
+        fecha_txt = now_uy.strftime("%d/%m/%Y")
+        title_map = {
+            "day":   f"📅 Resumen del día — {fecha_txt} (manual)",
+            "week":  f"🗓️ Resumen de la semana — {fecha_txt} (manual)",
+            "month": f"📆 Resumen del mes — {fecha_txt} (manual)",
+        }
+
+    await _send_snapshot(
+        bot, pool, guild_id, channel_id, period_value, title_map[period_value], reference_date
+    )
 
 
 def setup_snapshot_task(bot, pool, crcon_client):
