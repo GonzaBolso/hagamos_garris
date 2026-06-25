@@ -13,6 +13,8 @@ import config
 from api import crcon
 from commands.hll import setup_hll
 from commands.stats import setup_stats
+from commands.challenges import setup_challenges
+from snapshot_task import setup_snapshot_task
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -37,7 +39,9 @@ class HLLBot(commands.Bot):
 
     async def setup_hook(self):
         await crcon.start()
-        setup_hll(self, self.pool)
+        hll_group = setup_hll(self, self.pool)
+        setup_challenges(hll_group, self.pool)
+        self.tree.add_command(hll_group)
         setup_stats(self, self.pool)
 
         guild = discord.Object(id=config.GUILD_ID)
@@ -59,6 +63,10 @@ class HLLBot(commands.Bot):
 
         self.tree.on_error = on_tree_error
 
+        self.snapshot_loop = setup_snapshot_task(self, self.pool)
+        self.snapshot_loop.start()
+        log.info("Tarea de snapshots automáticos iniciada (23:29 hora UY)")
+
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
         await self.change_presence(
@@ -69,6 +77,8 @@ class HLLBot(commands.Bot):
         )
 
     async def close(self):
+        if hasattr(self, "snapshot_loop"):
+            self.snapshot_loop.cancel()
         await crcon.close()
         await super().close()
 

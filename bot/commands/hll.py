@@ -2,7 +2,7 @@
 commands/hll.py
 Grupo /hll con subcomandos: registro, help, server, online, top, vip, setchannel, setroles
 """
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
@@ -10,6 +10,11 @@ from discord.ext import commands
 
 from api import crcon, CRCONError
 from checks import admin_only, player_or_admin
+from timeutils import parse_iso_to_local
+from leaderboards import (
+    fetch_leaderboard, build_leaderboard_embed,
+)
+from snapshot_task import run_snapshot_manual
 
 
 def country_to_flag(code: str) -> str:
@@ -21,39 +26,65 @@ def country_to_flag(code: str) -> str:
 
 
 def format_vip_expiration(expiration: str) -> str:
-    """Convierte una fecha ISO de vencimiento VIP en texto legible (o 'permanente')."""
+    """Convierte una fecha ISO de vencimiento VIP en texto legible en hora local (o 'permanente')."""
     if not expiration:
         return "Sin vencimiento"
     if expiration.startswith("3000"):
         return "Sin vencimiento (permanente)"
+    return parse_iso_to_local(expiration, "%d/%m/%Y %H:%M")
+
+
+def format_time_remaining(seconds) -> str:
+    """Convierte segundos a formato Xh Ym."""
     try:
-        dt = datetime.fromisoformat(expiration)
-        return dt.strftime("%d/%m/%Y %H:%M")
-    except ValueError:
-        return expiration
+        seconds = int(float(seconds))
+    except (TypeError, ValueError):
+        return "?"
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 def setup_hll(bot: commands.Bot, pool):
     group = app_commands.Group(name="hll", description="Comandos de Hell Let Loose")
 
     # ── /hll setchannel ───────────────────────────────────────
-    @group.command(name="setchannel", description="[Admin] Configura el canal para comandos de jugadores")
-    @app_commands.describe(canal="Canal donde los jugadores podrán usar los comandos")
+    @group.command(name="setchannel", description="[Admin] Configura los canales del bot")
+    @app_commands.describe(
+        canal="Canal donde los jugadores podrán usar los comandos",
+        canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)"
+    )
     @admin_only()
-    async def setchannel(interaction: discord.Interaction, canal: discord.TextChannel):
+    async def setchannel(interaction: discord.Interaction,
+                          canal: discord.TextChannel,
+                          canal_snapshots: discord.TextChannel = None):
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO guild_config (guild_id, stats_channel_id)
-                VALUES ($1, $2)
-                ON CONFLICT (guild_id) DO UPDATE SET stats_channel_id = $2, updated_at = NOW()
-                """,
-                interaction.guild_id, canal.id
-            )
-        await interaction.response.send_message(
-            f"✅ Canal configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí.",
-            ephemeral=True
-        )
+            if canal_snapshots is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (guild_id) DO UPDATE
+                        SET stats_channel_id = $2, snapshot_channel_id = $3, updated_at = NOW()
+                    """,
+                    interaction.guild_id, canal.id, canal_snapshots.id
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO guild_config (guild_id, stats_channel_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (guild_id) DO UPDATE SET stats_channel_id = $2, updated_at = NOW()
+                    """,
+                    interaction.guild_id, canal.id
+                )
+
+        msg = f"✅ Canal de jugadores configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí."
+        if canal_snapshots is not None:
+            msg += f"\n✅ Canal de snapshots automáticos: {canal_snapshots.mention}"
+        await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /hll setroles ─────────────────────────────────────────
     @group.command(name="setroles", description="[Admin] Configura los roles de admin y player")
@@ -99,11 +130,13 @@ def setup_hll(bot: commands.Bot, pool):
             return
 
         channel = interaction.guild.get_channel(row["stats_channel_id"]) if row["stats_channel_id"] else None
+        snapshot_channel = interaction.guild.get_channel(row["snapshot_channel_id"]) if row.get("snapshot_channel_id") else None
         admin_role  = interaction.guild.get_role(row["admin_role_id"])  if row["admin_role_id"]  else None
         player_role = interaction.guild.get_role(row["mod_role_id"])    if row["mod_role_id"]    else None
 
         embed = discord.Embed(title="⚙️ Configuración del Bot", color=0x5865F2)
         embed.add_field(name="Canal jugadores", value=channel.mention  if channel     else "No configurado", inline=False)
+        embed.add_field(name="Canal snapshots", value=snapshot_channel.mention if snapshot_channel else "No configurado", inline=False)
         embed.add_field(name="Rol Admin",       value=admin_role.mention  if admin_role  else "No configurado", inline=True)
         embed.add_field(name="Rol Player",      value=player_role.mention if player_role else "No configurado", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -245,7 +278,7 @@ def setup_hll(bot: commands.Bot, pool):
         next_map     = state.get("next_map", {}).get("pretty_name", "?")
         allied       = state.get("num_allied_players", 0)
         axis         = state.get("num_axis_players", 0)
-        time_rem     = state.get("time_remaining", "?")
+        time_rem     = format_time_remaining(state.get("time_remaining"))
         score_allied = state.get("allied_score", 0)
         score_axis   = state.get("axis_score", 0)
         max_players  = slots.get("max_players", 100) if slots else 100
@@ -258,7 +291,7 @@ def setup_hll(bot: commands.Bot, pool):
                         inline=False)
         embed.add_field(name="🏆 Score",
                         value=f"Aliados {score_allied} — {score_axis} Eje", inline=True)
-        embed.add_field(name="⏱️ Tiempo restante", value=str(time_rem), inline=True)
+        embed.add_field(name="⏱️ Tiempo restante", value=time_rem, inline=True)
         await interaction.followup.send(embed=embed)
 
     # ── /hll online ───────────────────────────────────────────
@@ -323,60 +356,80 @@ def setup_hll(bot: commands.Bot, pool):
             await interaction.followup.send("❌ No tenés VIP en este servidor.", ephemeral=True)
 
     # ── /hll top ──────────────────────────────────────────────
-    @group.command(name="top", description="Ranking histórico de jugadores")
+    @group.command(name="top", description="Ranking de jugadores")
     @app_commands.describe(
         categoria="Qué querés rankear",
-        cantidad="Cuántos jugadores mostrar (máx 20)"
+        cantidad="Cuántos jugadores mostrar (máx 20)",
+        periodo="Rango de tiempo a considerar (default: histórico)"
     )
-    @app_commands.choices(categoria=[
-        app_commands.Choice(name="Kills",    value="total_kills"),
-        app_commands.Choice(name="K/D",      value="kd_ratio"),
-        app_commands.Choice(name="Partidas", value="matches_played"),
-        app_commands.Choice(name="Combat",   value="total_combat"),
-        app_commands.Choice(name="Offense",  value="total_offense"),
-        app_commands.Choice(name="Defense",  value="total_defense"),
-        app_commands.Choice(name="Support",  value="total_support"),
-    ])
+    @app_commands.choices(
+        categoria=[
+            app_commands.Choice(name="Kills",    value="total_kills"),
+            app_commands.Choice(name="K/D",      value="kd_ratio"),
+            app_commands.Choice(name="Partidas", value="matches_played"),
+            app_commands.Choice(name="Combat",   value="total_combat"),
+            app_commands.Choice(name="Offense",  value="total_offense"),
+            app_commands.Choice(name="Defense",  value="total_defense"),
+            app_commands.Choice(name="Support",  value="total_support"),
+        ],
+        periodo=[
+            app_commands.Choice(name="Histórico", value="all"),
+            app_commands.Choice(name="Día",       value="day"),
+            app_commands.Choice(name="Semana",    value="week"),
+            app_commands.Choice(name="Mes",       value="month"),
+        ],
+    )
     @player_or_admin()
     async def top(interaction: discord.Interaction,
                   categoria: app_commands.Choice[str],
-                  cantidad: int = 10):
+                  cantidad: int = 10,
+                  periodo: app_commands.Choice[str] = None):
         await interaction.response.defer()
 
         cantidad = max(1, min(cantidad, 20))
-        col      = categoria.value
+        col = categoria.value
+        period_value = periodo.value if periodo else "all"
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT last_name, {col}, matches_played, total_kills, total_deaths, kd_ratio
-                FROM player_totals
-                ORDER BY {col} DESC NULLS LAST
-                LIMIT $1
-                """,
-                cantidad
-            )
+        rows = await fetch_leaderboard(pool, col, period_value, cantidad)
 
         if not rows:
-            await interaction.followup.send("No hay datos todavía.")
+            label = periodo.name if periodo else "Histórico"
+            await interaction.followup.send(f"No hay datos para ese período ({label}).")
             return
 
-        medals = ["🥇", "🥈", "🥉"]
-        lines  = []
-        for i, r in enumerate(rows):
-            medal = medals[i] if i < 3 else f"`{i+1}.`"
-            value = r[col]
-            if isinstance(value, float):
-                value = f"{value:.2f}"
-            lines.append(f"{medal} **{r['last_name']}** — {value}")
-
-        embed = discord.Embed(
-            title=f"🏆 Top {cantidad} — {categoria.name}",
-            description="\n".join(lines),
-            color=0xF1C40F
-        )
-        embed.set_footer(text="Stats históricos acumulados")
+        embed = build_leaderboard_embed(rows, col, categoria.name, period_value, cantidad)
         await interaction.followup.send(embed=embed)
+
+    # ── /hll snapshot ───────────────────────
+    @group.command(name="snapshot", description="[Admin] Manda ahora mismo el resumen de Top 10 (sin esperar la hora programada)")
+    @app_commands.describe(periodo="Qué resumen mandar: día, semana o mes")
+    @app_commands.choices(periodo=[
+        app_commands.Choice(name="Día",    value="day"),
+        app_commands.Choice(name="Semana", value="week"),
+        app_commands.Choice(name="Mes",    value="month"),
+    ])
+    @admin_only()
+    async def snapshot(interaction: discord.Interaction, periodo: app_commands.Choice[str] = None):
+        await interaction.response.defer(ephemeral=True)
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT snapshot_channel_id FROM guild_config WHERE guild_id = $1", interaction.guild_id
+            )
+
+        if not row or not row["snapshot_channel_id"]:
+            await interaction.followup.send(
+                "❌ No hay canal de snapshots configurado. Usá `/hll setchannel` con el parámetro `canal_snapshots`.",
+                ephemeral=True
+            )
+            return
+
+        period_value = periodo.value if periodo else "day"
+        await run_snapshot_manual(
+            interaction.client, pool, interaction.guild_id, row["snapshot_channel_id"], period_value
+        )
+        channel_mention = f"<#{row['snapshot_channel_id']}>"
+        await interaction.followup.send(f"✅ Snapshot enviado a {channel_mention}.", ephemeral=True)
 
     # ── /hll help ─────────────────────────────────────────────
     @group.command(name="help", description="Lista de comandos disponibles")
@@ -387,13 +440,14 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll server",              value="Estado del servidor (mapa, jugadores, score)", inline=False)
         embed.add_field(name="/hll online",              value="Jugadores conectados ahora mismo", inline=False)
         embed.add_field(name="/hll vip",                 value="Verificá si tenés VIP activo", inline=False)
-        embed.add_field(name="/hll top <categoria>",     value="Ranking histórico: Kills, K/D, Partidas, etc.", inline=False)
+        embed.add_field(name="/hll top <categoria> [periodo]", value="Ranking: Kills, K/D, Partidas, etc. Período: histórico/día/semana/mes", inline=False)
         embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)
         embed.add_field(name="/stats games [cantidad]",  value="Tus últimas N partidas", inline=False)
         embed.add_field(name="── Admin ──",              value="\u200b", inline=False)
+        embed.add_field(name="/hll snapshot [periodo]",   value="Manda ahora el resumen Top 10, sin esperar la hora programada", inline=False)
         embed.add_field(name="/hll setchannel #canal",   value="Configura el canal para jugadores", inline=False)
         embed.add_field(name="/hll setroles @admin @player", value="Configura los roles", inline=False)
         embed.add_field(name="/hll config",              value="Muestra la configuración actual", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    bot.tree.add_command(group)
+    return group

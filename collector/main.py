@@ -145,6 +145,220 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
     return new_count
 
 
+METRIC_COLUMN = {
+    "kills":    "kills",
+    "deaths":   "deaths",
+    "matches":  None,        # se cuenta como COUNT(*) de partidas en el rango
+    "combat":   "combat_score",
+    "offense":  "offense_score",
+    "defense":  "defense_score",
+    "support":  "support_score",
+    "kd_ratio": None,        # se calcula aparte: SUM(kills)/SUM(deaths)
+}
+
+
+async def fetch_metric_values(conn, metric: str, match_ids: list = None,
+                               start_date=None, end_date=None) -> list:
+    """
+    Devuelve [{steam_id, player_name, value}, ...] para una métrica dada,
+    filtrando por una lista explícita de match_id (partidas puntuales)
+    o por rango de fechas [start_date, end_date].
+    """
+    col = METRIC_COLUMN.get(metric)
+
+    if match_ids is not None:
+        where_clause = "mps.match_id = ANY($1::varchar[])"
+        params = [match_ids]
+    else:
+        where_clause = "m.start_time BETWEEN $1 AND $2"
+        params = [start_date, end_date]
+
+    if metric == "matches":
+        query = f"""
+            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+                   COUNT(DISTINCT mps.match_id) AS value
+            FROM match_player_stats mps
+            JOIN matches m USING (match_id)
+            WHERE {where_clause}
+            GROUP BY mps.steam_id
+        """
+    elif metric == "kd_ratio":
+        query = f"""
+            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+                   CASE WHEN SUM(mps.deaths) = 0 THEN SUM(mps.kills)::FLOAT
+                        ELSE ROUND((SUM(mps.kills)::NUMERIC / SUM(mps.deaths)), 2)
+                   END AS value
+            FROM match_player_stats mps
+            JOIN matches m USING (match_id)
+            WHERE {where_clause}
+            GROUP BY mps.steam_id
+        """
+    else:
+        query = f"""
+            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+                   SUM(mps.{col}) AS value
+            FROM match_player_stats mps
+            JOIN matches m USING (match_id)
+            WHERE {where_clause}
+            GROUP BY mps.steam_id
+        """
+
+    return await conn.fetch(query, *params)
+
+
+async def resolve_match_scope(conn, challenge) -> tuple:
+    """
+    Para desafíos por partida (current_match / next_match), determina
+    qué match_id(s) corresponden. Devuelve (match_ids, should_close).
+    should_close=True si el desafío ya terminó y debe desactivarse.
+    """
+    period = challenge["period"]
+
+    if period == "current_match":
+        # La "partida actual" es la más reciente que tengamos guardada.
+        latest = await conn.fetchrow(
+            "SELECT match_id, end_time FROM matches ORDER BY start_time DESC LIMIT 1"
+        )
+        if not latest:
+            return None, False
+
+        if challenge["match_id"] is None:
+            # Primera vez que vemos este desafío: lo asociamos a la partida en curso.
+            await conn.execute(
+                "UPDATE challenges SET match_id = $1, start_date = NOW() WHERE id = $2",
+                latest["match_id"], challenge["id"]
+            )
+            return [latest["match_id"]], False
+
+        if challenge["match_id"] != latest["match_id"]:
+            # Cambió el mapa: la partida asociada ya terminó → cerramos el desafío.
+            return [challenge["match_id"]], True
+
+        return [challenge["match_id"]], False
+
+    elif period == "next_match":
+        latest = await conn.fetchrow(
+            "SELECT match_id FROM matches ORDER BY start_time DESC LIMIT 1"
+        )
+        if not latest:
+            return None, False
+
+        if challenge["match_id"] is None:
+            # Todavía no arrancó: lo asociamos a la PRÓXIMA partida que aparezca
+            # distinta a la que existía al crear el desafío. Para simplificar,
+            # lo asociamos directamente a la última partida vista a partir de ahora.
+            await conn.execute(
+                "UPDATE challenges SET match_id = $1, start_date = NOW() WHERE id = $2",
+                latest["match_id"], challenge["id"]
+            )
+            return [latest["match_id"]], False
+
+        if challenge["match_id"] != latest["match_id"]:
+            # La partida asociada ya pasó y cambiamos a otra → terminó.
+            return [challenge["match_id"]], True
+
+        return [challenge["match_id"]], False
+
+    return None, False
+
+
+async def update_challenges_progress(pool: asyncpg.Pool):
+    """
+    Recalcula el progreso de cada jugador para todos los desafíos activos.
+    Soporta múltiples métricas por desafío (AND: todas deben cumplirse)
+    y períodos por fecha o por partida (current_match / next_match).
+    """
+    async with pool.acquire() as conn:
+        challenges = await conn.fetch(
+            """
+            SELECT * FROM challenges
+            WHERE active = TRUE
+              AND (end_date IS NULL OR end_date > NOW())
+            """
+        )
+
+        for ch in challenges:
+            match_ids   = None
+            start_date  = ch["start_date"]
+            end_date    = ch["end_date"]
+            should_close = False
+
+            if ch["period"] in ("current_match", "next_match"):
+                match_ids, should_close = await resolve_match_scope(conn, ch)
+                if match_ids is None:
+                    continue  # todavía no hay ninguna partida registrada
+
+            metrics = await conn.fetch(
+                "SELECT id, metric, target FROM challenge_metrics WHERE challenge_id = $1",
+                ch["id"]
+            )
+            if not metrics:
+                continue
+
+            # steam_id -> {metric: completed_bool}
+            player_completion = {}
+            player_names = {}
+            touched_players = 0
+
+            for metric_row in metrics:
+                values = await fetch_metric_values(
+                    conn, metric_row["metric"],
+                    match_ids=match_ids, start_date=start_date, end_date=end_date
+                )
+                touched_players = max(touched_players, len(values))
+
+                for r in values:
+                    value     = float(r["value"] or 0)
+                    completed = value >= float(metric_row["target"])
+                    steam_id  = r["steam_id"]
+                    player_names[steam_id] = r["player_name"]
+
+                    await conn.execute(
+                        """
+                        INSERT INTO challenge_metric_progress
+                            (challenge_metric_id, steam_id, player_name, progress, completed)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (challenge_metric_id, steam_id) DO UPDATE
+                            SET progress = $4, player_name = $3, completed = $5, updated_at = NOW()
+                        """,
+                        metric_row["id"], steam_id, r["player_name"], value, completed
+                    )
+
+                    player_completion.setdefault(steam_id, []).append(completed)
+
+            # Consolidar: completed = TRUE solo si TODAS las métricas dieron TRUE
+            for steam_id, flags in player_completion.items():
+                all_completed = all(flags) and len(flags) == len(metrics)
+
+                await conn.execute(
+                    """
+                    INSERT INTO challenge_progress
+                        (challenge_id, steam_id, player_name, completed, completed_at)
+                    VALUES ($1, $2, $3, $4, CASE WHEN $4 THEN NOW() ELSE NULL END)
+                    ON CONFLICT (challenge_id, steam_id) DO UPDATE
+                        SET player_name = $3,
+                            completed = $4,
+                            completed_at = CASE
+                                WHEN $4 AND challenge_progress.completed = FALSE
+                                THEN NOW()
+                                ELSE challenge_progress.completed_at
+                            END,
+                            updated_at = NOW()
+                    """,
+                    ch["id"], steam_id, player_names.get(steam_id), all_completed
+                )
+
+            if touched_players:
+                log.info(f"  Desafío '{ch['name']}' (#{ch['id']}): {touched_players} jugadores actualizados")
+
+            if should_close:
+                await conn.execute(
+                    "UPDATE challenges SET active = FALSE, end_date = NOW() WHERE id = $1",
+                    ch["id"]
+                )
+                log.info(f"  Desafío '{ch['name']}' (#{ch['id']}) cerrado: terminó la partida asociada")
+
+
 async def run():
     log.info("Collector iniciado")
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=3)
@@ -182,6 +396,9 @@ async def run():
                     page += 1
 
                 log.info(f"Total partidas nuevas guardadas: {total_new}")
+
+                log.info("Actualizando progreso de desafíos...")
+                await update_challenges_progress(pool)
 
             except Exception as e:
                 log.error(f"Error en ciclo: {e}", exc_info=True)

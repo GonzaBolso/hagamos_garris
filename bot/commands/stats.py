@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from checks import player_or_admin
+from timeutils import format_local
 
 
 def setup_stats(bot: commands.Bot, pool):
@@ -93,7 +94,7 @@ def setup_stats(bot: commands.Bot, pool):
 
         embed = discord.Embed(title=f"🎮 Últimas {len(rows)} partidas", color=0x5865F2)
         for r in rows:
-            fecha = r["start_time"].strftime("%d/%m %H:%M") if r["start_time"] else "?"
+            fecha = format_local(r["start_time"], "%d/%m %H:%M")
             kd    = round(r["kills"] / r["deaths"], 2) if r["deaths"] else r["kills"]
             horas = round(r["time_seconds"] / 3600, 1) if r["time_seconds"] else 0
             score = f"{r['allied_score']}–{r['axis_score']}"
