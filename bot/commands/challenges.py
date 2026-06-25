@@ -1,7 +1,7 @@
 """
 commands/challenges.py
-Subgrupo /hll desafio: metricas, listar, progreso (jugador)
-Subgrupo /hlladmin desafio: crear, eliminar (admin)
+Subgrupo /hll desafio: listar, progreso (jugador)
+Subgrupo /hlladmin desafio: metricas, crear, eliminar (admin)
 
 Soporta:
   - Múltiples métricas por desafío (todas deben cumplirse — AND)
@@ -76,8 +76,8 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
     sub = app_commands.Group(name="desafio", description="Desafíos automáticos de stats", parent=hll_group)
     admin_sub = app_commands.Group(name="desafio", description="Administración de desafíos", parent=admin_group)
 
-    # ── /hll desafio metricas ─────────────────────────────────
-    @sub.command(name="metricas", description="Lista las métricas disponibles para crear desafíos")
+    # ── /hlladmin desafio metricas ─────────────────────────────
+    @admin_sub.command(name="metricas", description="Lista las métricas disponibles para crear desafíos")
     async def metricas_cmd(interaction: discord.Interaction):
         lines = [f"`{key}` — {label}" for key, label in METRIC_LABELS.items()]
         embed = discord.Embed(
