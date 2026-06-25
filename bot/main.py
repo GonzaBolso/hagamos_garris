@@ -39,9 +39,10 @@ class HLLBot(commands.Bot):
 
     async def setup_hook(self):
         await crcon.start()
-        hll_group = setup_hll(self, self.pool)
-        setup_challenges(hll_group, self.pool)
+        hll_group, hlladmin_group = setup_hll(self, self.pool)
+        setup_challenges(hll_group, hlladmin_group, self.pool)
         self.tree.add_command(hll_group)
+        self.tree.add_command(hlladmin_group)
         setup_stats(self, self.pool)
 
         guild = discord.Object(id=config.GUILD_ID)

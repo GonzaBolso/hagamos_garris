@@ -9,6 +9,10 @@
 | `/hll desafio crear`                                  | Crear  desafio                            |
 | `/hll desafio eliminar <id>`                          | Eliminar  desafio                         |
 
+/hll snapshot               → manda el resumen del día, ahora mismo
+/hll snapshot periodo:Semana → manda el resumen de la semana, ahora mismo
+/hll snapshot periodo:Mes    → manda el resumen del mes, ahora mismo
+
 
 ## Comandos disponibles para players
 | Comando | Descripción                                   |
@@ -23,3 +27,4 @@
 | `/stats games [cantidad]` | Tus últimas N partidas                        |
 | `/hll desafio listar` | Listar Desafio                                |
 | `/hll desafio progreso <id>` | Progreso del desafio                          |
+

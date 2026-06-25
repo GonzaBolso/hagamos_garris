@@ -1,6 +1,7 @@
 """
 commands/challenges.py
-Subgrupo /hll desafio: crear, listar, progreso, eliminar
+Subgrupo /hll desafio: metricas, listar, progreso (jugador)
+Subgrupo /hlladmin desafio: crear, eliminar (admin)
 
 Soporta:
   - Múltiples métricas por desafío (todas deben cumplirse — AND)
@@ -71,8 +72,9 @@ def format_metrics_line(metrics: list) -> str:
     return " **Y** ".join(parts)
 
 
-def setup_challenges(hll_group: app_commands.Group, pool):
+def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Group, pool):
     sub = app_commands.Group(name="desafio", description="Desafíos automáticos de stats", parent=hll_group)
+    admin_sub = app_commands.Group(name="desafio", description="Administración de desafíos", parent=admin_group)
 
     # ── /hll desafio metricas ─────────────────────────────────
     @sub.command(name="metricas", description="Lista las métricas disponibles para crear desafíos")
@@ -89,8 +91,8 @@ def setup_challenges(hll_group: app_commands.Group, pool):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── /hll desafio crear ───────────────────────────────────
-    @sub.command(name="crear", description="[Admin] Crea un desafío configurable")
+    # ── /hlladmin desafio crear ───────────────────────────────
+    @admin_sub.command(name="crear", description="Crea un desafío configurable")
     @app_commands.describe(
         nombre="Nombre del desafío (ej: 'Cazador de la semana')",
         metricas="kills, kd_ratio, matches, combat, offense, defense, support — ej: 'kills:20,kd_ratio:2'",
@@ -282,8 +284,8 @@ def setup_challenges(hll_group: app_commands.Group, pool):
         embed.set_footer(text=f"{completed_count} jugador(es) completaron el desafío")
         await interaction.followup.send(embed=embed)
 
-    # ── /hll desafio eliminar ────────────────────────────────
-    @sub.command(name="eliminar", description="[Admin] Desactiva un desafío")
+    # ── /hlladmin desafio eliminar ────────────────────────────
+    @admin_sub.command(name="eliminar", description="Desactiva un desafío")
     @app_commands.describe(id="ID del desafío a eliminar")
     @admin_only()
     async def eliminar(interaction: discord.Interaction, id: int):

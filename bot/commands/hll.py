@@ -50,8 +50,18 @@ def format_time_remaining(seconds) -> str:
 def setup_hll(bot: commands.Bot, pool):
     group = app_commands.Group(name="hll", description="Comandos de Hell Let Loose")
 
-    # ── /hll setchannel ───────────────────────────────────────
-    @group.command(name="setchannel", description="[Admin] Configura los canales del bot")
+    # Grupo separado para comandos de administración. default_permissions hace
+    # que Discord OCULTE este grupo del autocompletado para cualquiera que no
+    # tenga el permiso "Administrador" en el servidor (no solo que falle al
+    # ejecutarlo: ni siquiera aparece en la lista de comandos).
+    admin_group = app_commands.Group(
+        name="hlladmin",
+        description="Comandos de administración del bot HLL",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    # ── /hlladmin setchannel ───────────────────────────────────
+    @admin_group.command(name="setchannel", description="Configura los canales del bot")
     @app_commands.describe(
         canal="Canal donde los jugadores podrán usar los comandos",
         canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)"
@@ -86,8 +96,8 @@ def setup_hll(bot: commands.Bot, pool):
             msg += f"\n✅ Canal de snapshots automáticos: {canal_snapshots.mention}"
         await interaction.response.send_message(msg, ephemeral=True)
 
-    # ── /hll setroles ─────────────────────────────────────────
-    @group.command(name="setroles", description="[Admin] Configura los roles de admin y player")
+    # ── /hlladmin setroles ──────────────────────────────────────
+    @admin_group.command(name="setroles", description="Configura los roles de admin y player")
     @app_commands.describe(
         admin="Rol que puede usar todos los comandos en cualquier canal",
         player="Rol que puede usar comandos en el canal configurado"
@@ -113,8 +123,8 @@ def setup_hll(bot: commands.Bot, pool):
             ephemeral=True
         )
 
-    # ── /hll config ───────────────────────────────────────────
-    @group.command(name="config", description="[Admin] Muestra la configuración actual")
+    # ── /hlladmin config ────────────────────────────────────────
+    @admin_group.command(name="config", description="Muestra la configuración actual")
     @admin_only()
     async def config(interaction: discord.Interaction):
         async with pool.acquire() as conn:
@@ -124,7 +134,7 @@ def setup_hll(bot: commands.Bot, pool):
 
         if not row:
             await interaction.response.send_message(
-                "⚠️ No hay configuración todavía. Usá `/hll setchannel` y `/hll setroles`.",
+                "⚠️ No hay configuración todavía. Usá `/hlladmin setchannel` y `/hlladmin setroles`.",
                 ephemeral=True
             )
             return
@@ -400,8 +410,8 @@ def setup_hll(bot: commands.Bot, pool):
         embed = build_leaderboard_embed(rows, col, categoria.name, period_value, cantidad)
         await interaction.followup.send(embed=embed)
 
-    # ── /hll snapshot ───────────────────────
-    @group.command(name="snapshot", description="[Admin] Manda ahora mismo el resumen de Top 10 (sin esperar la hora programada)")
+    # ── /hlladmin snapshot ──────────────────────────────────────
+    @admin_group.command(name="snapshot", description="Manda ahora mismo el resumen de Top 10 (sin esperar la hora programada)")
     @app_commands.describe(periodo="Qué resumen mandar: día, semana o mes")
     @app_commands.choices(periodo=[
         app_commands.Choice(name="Día",    value="day"),
@@ -419,7 +429,7 @@ def setup_hll(bot: commands.Bot, pool):
 
         if not row or not row["snapshot_channel_id"]:
             await interaction.followup.send(
-                "❌ No hay canal de snapshots configurado. Usá `/hll setchannel` con el parámetro `canal_snapshots`.",
+                "❌ No hay canal de snapshots configurado. Usá `/hlladmin setchannel` con el parámetro `canal_snapshots`.",
                 ephemeral=True
             )
             return
@@ -443,11 +453,17 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll top <categoria> [periodo]", value="Ranking: Kills, K/D, Partidas, etc. Período: histórico/día/semana/mes", inline=False)
         embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)
         embed.add_field(name="/stats games [cantidad]",  value="Tus últimas N partidas", inline=False)
-        embed.add_field(name="── Admin ──",              value="\u200b", inline=False)
-        embed.add_field(name="/hll snapshot [periodo]",   value="Manda ahora el resumen Top 10, sin esperar la hora programada", inline=False)
-        embed.add_field(name="/hll setchannel #canal",   value="Configura el canal para jugadores", inline=False)
-        embed.add_field(name="/hll setroles @admin @player", value="Configura los roles", inline=False)
-        embed.add_field(name="/hll config",              value="Muestra la configuración actual", inline=False)
+
+        # La sección admin solo se muestra a quien efectivamente tiene
+        # permiso de Administrador (los comandos viven en /hlladmin, que
+        # Discord ya oculta del autocompletado para el resto).
+        if interaction.user.guild_permissions.administrator:
+            embed.add_field(name="── Admin (/hlladmin) ──",        value="\u200b", inline=False)
+            embed.add_field(name="/hlladmin snapshot [periodo]",   value="Manda ahora el resumen Top 10, sin esperar la hora programada", inline=False)
+            embed.add_field(name="/hlladmin setchannel #canal",    value="Configura el canal para jugadores y/o snapshots", inline=False)
+            embed.add_field(name="/hlladmin setroles @admin @player", value="Configura los roles", inline=False)
+            embed.add_field(name="/hlladmin config",               value="Muestra la configuración actual", inline=False)
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    return group
+    return group, admin_group
