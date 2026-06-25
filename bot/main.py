@@ -64,7 +64,7 @@ class HLLBot(commands.Bot):
 
         self.tree.on_error = on_tree_error
 
-        self.snapshot_loop = setup_snapshot_task(self, self.pool)
+        self.snapshot_loop = setup_snapshot_task(self, self.pool, crcon)
         self.snapshot_loop.start()
         log.info("Tarea de snapshots automáticos iniciada (23:29 hora UY)")
 

@@ -127,8 +127,14 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int):
 
 
 def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: str,
-                             limit: int, now_uy: datetime = None) -> discord.Embed:
-    """Construye el embed de un ranking ya consultado (rows de fetch_leaderboard)."""
+                             limit: int, now_uy: datetime = None,
+                             include_links: bool = True) -> discord.Embed:
+    """
+    Construye el embed de un ranking ya consultado (rows de fetch_leaderboard).
+    include_links=False usa texto plano sin link a Steam (más corto): se usa
+    en el snapshot automático, donde 7 embeds van en un solo mensaje y Discord
+    limita el total combinado a 6000 caracteres.
+    """
     _, color, icon, value_label = CATEGORY_BY_COLUMN.get(col, (categoria_name, 0xF1C40F, "🏆", categoria_name))
     period_label = PERIOD_LABELS.get(period_value, "Histórico")
 
@@ -137,7 +143,14 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
 
     for i, r in enumerate(rows):
         rank = f"{i+1:>2}."
-        name_linked = steam_profile_link(r["last_name"], r["steam_id"])
+
+        if include_links:
+            name_display = steam_profile_link(r["last_name"], r["steam_id"])
+        else:
+            raw_name = (r["last_name"] or "?").replace("[", "(").replace("]", ")")
+            # Salvaguarda: un nombre inusualmente largo no debe poder
+            # empujar el total del mensaje sobre el límite de Discord.
+            name_display = raw_name if len(raw_name) <= 18 else raw_name[:17] + "…"
 
         value = r[col]
         value_str = f"{value:.2f}" if isinstance(value, float) else str(value)
@@ -146,7 +159,7 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
         kd_str = f"{kd_val:.2f}" if kd_val is not None else "—"
 
         lines.append(
-            f"`{rank}` {name_linked} — **{value_str}** "
+            f"`{rank}` {name_display} — **{value_str}** "
             f"· {r['matches_played']} partidas · KD {kd_str}"
         )
 
@@ -168,16 +181,18 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
     return embed
 
 
-async def build_all_category_embeds(pool, period_value: str, limit: int, now_uy: datetime = None):
+async def build_all_category_embeds(pool, period_value: str, limit: int, now_uy: datetime = None,
+                                      include_links: bool = True):
     """
     Corre fetch_leaderboard + build_leaderboard_embed para TODAS las categorías
     definidas en CATEGORIES, en orden. Devuelve una lista de embeds (omite
     categorías sin datos en ese período).
+    include_links=False se usa para el snapshot automático (ver build_leaderboard_embed).
     """
     embeds = []
     for name, col, *_ in CATEGORIES:
         rows = await fetch_leaderboard(pool, col, period_value, limit)
         if not rows:
             continue
-        embeds.append(build_leaderboard_embed(rows, col, name, period_value, limit, now_uy))
+        embeds.append(build_leaderboard_embed(rows, col, name, period_value, limit, now_uy, include_links))
     return embeds

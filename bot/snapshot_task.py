@@ -8,6 +8,26 @@ Si además es domingo, agrega también el Top 10 de la semana. Si es el
 Cada "tanda" de categorías (día / semana / mes) va en SU PROPIO mensaje,
 con un embed por categoría dentro de ese mensaje (Discord permite hasta
 10 embeds por mensaje, y acá usamos 7 — una por categoría).
+
+ESPERA AL MAPA EN CURSO
+------------------------
+Si a las 23:29 hay un mapa que YA ESTABA jugándose (arrancó antes de esa
+hora), esa partida todavía no existe en la base — el collector solo
+procesa partidas cerradas. Para que el snapshot del día no se mande sin
+esa partida, se consulta get_public_info() y, si el mapa actual arrancó
+antes del horario de corte, se espera (revisando cada minuto) a que el
+mapa cambie (= la partida anterior terminó). Al detectar el cambio, se
+corre un mini-collect puntual (mini_collector.py) para procesar esa
+partida de inmediato, y recién entonces se manda el snapshot.
+
+Si pasan más de WAIT_MAX_MINUTES sin que el mapa cambie (server caído,
+ronda colgada, etc.), se manda el snapshot igual, sin esa partida —
+salvaguarda para no trabarse indefinidamente.
+
+Nota: una partida que arranca DESPUÉS de las 23:29 (ej. 23:40) no entra
+en este mecanismo — a las 23:29 el mapa en curso era otro, así que no hay
+nada que esperar para esa partida puntual. Sigue quedando fuera del
+snapshot del día, igual que del día siguiente (por start_time).
 """
 import calendar
 import logging
@@ -17,6 +37,7 @@ import discord
 from discord.ext import tasks
 
 from leaderboards import TZ_UY, build_all_category_embeds
+from mini_collector import collect_new_matches
 
 log = logging.getLogger("snapshot_task")
 
@@ -30,10 +51,29 @@ SNAPSHOT_LIMIT = 10
 # desde el horario programado.
 CATCHUP_WINDOW_MINUTES = 20
 
+# Tope máximo de espera por el mapa en curso antes de mandar el snapshot
+# igual, sin esa partida (salvaguarda ante cuelgues/bugs del server).
+WAIT_MAX_MINUTES = 60
+
 
 def _is_last_day_of_month(d: datetime) -> bool:
     last_day = calendar.monthrange(d.year, d.month)[1]
     return d.day == last_day
+
+
+async def _get_current_map_start(crcon_client):
+    """
+    Devuelve el timestamp 'start' del mapa actual según get_public_info(),
+    o None si no se pudo obtener (server caído, error de red, etc.).
+    """
+    try:
+        info = await crcon_client.get_public_info()
+    except Exception as e:
+        log.warning(f"  get_public_info() falló: {e}")
+        return None
+
+    current_map = (info or {}).get("current_map") or {}
+    return current_map.get("start")
 
 
 async def _send_snapshot(bot, pool, guild_id: int, channel_id: int,
@@ -46,7 +86,7 @@ async def _send_snapshot(bot, pool, guild_id: int, channel_id: int,
             log.warning(f"  No pude resolver el canal {channel_id} (guild {guild_id})")
             return
 
-    embeds = await build_all_category_embeds(pool, period_value, SNAPSHOT_LIMIT)
+    embeds = await build_all_category_embeds(pool, period_value, SNAPSHOT_LIMIT, include_links=False)
     if not embeds:
         log.info(f"  Sin datos para snapshot '{period_value}' en guild {guild_id}, se omite")
         return
@@ -102,8 +142,8 @@ async def run_snapshots_for_all_guilds(bot, pool, now_uy: datetime):
 async def run_snapshot_manual(bot, pool, guild_id: int, channel_id: int, period_value: str):
     """
     Dispara un solo snapshot (día/semana/mes) para UN guild puntual, sin
-    pasar por las condiciones de día/hora del loop automático. Pensado
-    para ser llamado desde un comando admin (/hll snapshot).
+    pasar por las condiciones de día/hora ni la espera del mapa en curso.
+    Pensado para ser llamado desde un comando admin (/hlladmin snapshot).
     """
     now_uy = datetime.now(TZ_UY)
     fecha_txt = now_uy.strftime("%d/%m/%Y")
@@ -115,13 +155,31 @@ async def run_snapshot_manual(bot, pool, guild_id: int, channel_id: int, period_
     await _send_snapshot(bot, pool, guild_id, channel_id, period_value, title_map[period_value])
 
 
-def setup_snapshot_task(bot, pool):
+def setup_snapshot_task(bot, pool, crcon_client):
     """
     Registra la tarea de loop que chequea cada minuto si es la hora de
     disparar el snapshot (23:29 hora UY). Se debe llamar una vez al
-    iniciar el bot, ej: setup_snapshot_task(bot, pool).start()
+    iniciar el bot, ej: setup_snapshot_task(bot, pool, crcon).start()
+
+    crcon_client: instancia de CRCONClient ya inicializada (con start()
+    corrido), usada para consultar get_public_info() y, si hace falta,
+    correr el mini-collect puntual.
     """
-    last_fired_date = {"value": None}  # evita disparar 2 veces el mismo día
+    last_fired_date = {"value": None}    # evita disparar 2 veces el mismo día
+
+    # Estado de "esperando que termine el mapa en curso". None = no estamos
+    # esperando nada en este momento.
+    wait_state = {"baseline_start": None, "started_at": None}
+
+    async def _fire_snapshots(now_uy: datetime, today):
+        log.info(f"Disparando snapshots del {today} (hora UY: {now_uy.strftime('%H:%M:%S')})")
+        try:
+            await run_snapshots_for_all_guilds(bot, pool, now_uy)
+        except Exception as e:
+            log.error(f"Error en snapshot_loop: {e}", exc_info=True)
+        last_fired_date["value"] = today
+        wait_state["baseline_start"] = None
+        wait_state["started_at"] = None
 
     @tasks.loop(minutes=1)
     async def snapshot_loop():
@@ -131,30 +189,82 @@ def setup_snapshot_task(bot, pool):
         if last_fired_date["value"] == today:
             return  # ya se disparó hoy
 
+        # ── Si ya estamos esperando que termine el mapa en curso ──────
+        if wait_state["started_at"] is not None:
+            elapsed_min = (now_uy - wait_state["started_at"]).total_seconds() / 60
+
+            current_start = await _get_current_map_start(crcon_client)
+
+            # Si pudimos leer el mapa actual y CAMBIÓ respecto al que
+            # vimos al empezar a esperar -> la partida anterior terminó.
+            if current_start is not None and current_start != wait_state["baseline_start"]:
+                log.info(
+                    f"Mapa en curso cambió (esperamos {elapsed_min:.0f} min); "
+                    f"corriendo mini-collect antes del snapshot del {today}"
+                )
+                try:
+                    new_count = await collect_new_matches(crcon_client, pool)
+                    log.info(f"  mini-collect: {new_count} partida(s) nueva(s) procesada(s)")
+                except Exception as e:
+                    log.error(f"  Error en mini-collect: {e}", exc_info=True)
+
+                await _fire_snapshots(now_uy, today)
+                return
+
+            # Todavía no cambió -> seguimos esperando, salvo que se nos
+            # haya agotado el tope máximo.
+            if elapsed_min >= WAIT_MAX_MINUTES:
+                log.warning(
+                    f"Pasaron {elapsed_min:.0f} min esperando que termine el mapa en curso "
+                    f"(tope {WAIT_MAX_MINUTES} min); mando el snapshot del {today} sin esa partida."
+                )
+                await _fire_snapshots(now_uy, today)
+                return
+
+            return  # seguimos esperando, nada más que hacer este minuto
+
+        # ── Todavía no llegó la hora objetivo de hoy ───────────────────
         target_today = now_uy.replace(
             hour=SNAPSHOT_HOUR, minute=SNAPSHOT_MINUTE, second=0, microsecond=0
         )
+        if now_uy < target_today:
+            return
 
-        # Disparamos si estamos en o después del horario objetivo, pero dentro
-        # de la ventana de tolerancia (para no perder el snapshot si el bot
-        # se reinició justo en ese momento).
-        if now_uy >= target_today:
-            minutes_late = (now_uy - target_today).total_seconds() / 60
-            if minutes_late <= CATCHUP_WINDOW_MINUTES:
-                log.info(f"Disparando snapshots del {today} (hora UY: {now_uy.strftime('%H:%M:%S')})")
-                try:
-                    await run_snapshots_for_all_guilds(bot, pool, now_uy)
-                except Exception as e:
-                    log.error(f"Error en snapshot_loop: {e}", exc_info=True)
-                last_fired_date["value"] = today
-            else:
-                # Pasaron más de CATCHUP_WINDOW_MINUTES del horario y nunca se
-                # disparó (ej. el bot estuvo caído varias horas) -> nos lo
-                # saltamos para no mandar un snapshot con horas de atraso.
-                log.warning(
-                    f"Se perdió la ventana de snapshot de hoy ({today}); "
-                    f"pasaron {minutes_late:.0f} min del horario objetivo. Se omite hasta mañana."
-                )
-                last_fired_date["value"] = today
+        minutes_late = (now_uy - target_today).total_seconds() / 60
+        if minutes_late > CATCHUP_WINDOW_MINUTES:
+            # El bot estuvo caído un buen rato y nunca llegó a disparar hoy;
+            # nos lo saltamos para no mandar algo con horas de atraso.
+            log.warning(
+                f"Se perdió la ventana de snapshot de hoy ({today}); "
+                f"pasaron {minutes_late:.0f} min del horario objetivo. Se omite hasta mañana."
+            )
+            last_fired_date["value"] = today
+            return
+
+        # ── Llegó la hora: ¿hay un mapa en curso que arrancó ANTES? ────
+        current_start = await _get_current_map_start(crcon_client)
+
+        if current_start is None:
+            # No pudimos leer el estado del server; no tiene sentido
+            # esperar por algo que no podemos verificar -> mandamos directo.
+            log.warning("No se pudo leer get_public_info() a la hora del snapshot; se manda sin esperar.")
+            await _fire_snapshots(now_uy, today)
+            return
+
+        target_ts = target_today.timestamp()
+        if current_start < target_ts:
+            # El mapa actual ya estaba jugándose antes de las 23:29 ->
+            # esperamos a que termine antes de mandar el snapshot.
+            log.info(
+                f"Hay un mapa en curso que arrancó antes de las {SNAPSHOT_HOUR}:{SNAPSHOT_MINUTE:02d}; "
+                f"esperando a que termine antes de mandar el snapshot del {today}."
+            )
+            wait_state["baseline_start"] = current_start
+            wait_state["started_at"] = now_uy
+            return
+
+        # El mapa actual arrancó EN o DESPUÉS del horario de corte -> no
+        # hay nada que esperar, mandamos el snapshot normalmente.
+        await _fire_snapshots(now_uy, today)
 
     return snapshot_loop

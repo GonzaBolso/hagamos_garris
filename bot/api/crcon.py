@@ -102,8 +102,14 @@ class CRCONClient:
     async def get_live_scoreboard(self):
         return await self._get("get_live_scoreboard")
 
-    async def get_scoreboard_maps(self):
-        return await self._get("get_scoreboard_maps")
+    async def get_scoreboard_maps(self, page: int = 1, page_size: int = 100):
+        return await self._get("get_scoreboard_maps", page=page, page_size=page_size)
+
+    async def get_map_scoreboard(self, map_id: int):
+        return await self._get("get_map_scoreboard", map_id=map_id)
+
+    async def get_public_info(self):
+        return await self._get("get_public_info")
 
     # ── VIP ───────────────────────────────────────────────────
     async def get_vip_ids(self):

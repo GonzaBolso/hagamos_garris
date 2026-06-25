@@ -1,16 +1,20 @@
 # BOT Stats Hagamos_garris
+## Pasos:
+- Configurar canales /hlladmin setchannel [Canal de Comandos] [Canal de Snapshots]
+- Configurar roles /hlladmin setroles [@admin] [@player]
+- Ver config con /hlladmin config
 
 ## Comandos disponibles para ADMIN
-| Comando                                                | Descripción                                 |
-|--------------------------------------------------------|---------------------------------------------|
-| `/hll setroles admin:@TuRolAdmin player:@TuRolPlayer`  | Set de Roles ecistentes de admin y Player   |
-| `/hll setchannel #tu-canal`                            | Set de Canal existente para comandos        |
-| `/hll config`                                          | Ver las configuraciones de canales, roles   |
-| `/hll desafio crear`                                   | Crear  desafio                              |
-| `/hll desafio eliminar <id>`                           | Eliminar  desafio                           |
-| `/hll snapshot`                                        | manda el resumen del día, ahora mismo       |
-| `/hll snapshot periodo:Semana`                         | manda el resumen de la semana, ahora mismo  |
-| `/hll snapshot periodo:Mes`                            | manda el resumen del mes, ahora mismo       |
+| Comando                                                    | Descripción                                 |
+|------------------------------------------------------------|---------------------------------------------|
+| `/hlladmin setroles admin:@TuRolAdmin player:@TuRolPlayer` | Set de Roles ecistentes de admin y Player   |
+| `/hlladmin setchannel #tu-canal`                           | Set de Canal existente para comandos        |
+| `/hlladmin config`                                         | Ver las configuraciones de canales, roles   |
+| `/hlladmin desafio crear`                                  | Crear  desafio                              |
+| `/hlladmin desafio eliminar <id>`                          | Eliminar  desafio                           |
+| `/hlladmin snapshot`                                       | manda el resumen del día, ahora mismo       |
+| `/hlladmin snapshot periodo:Semana`                        | manda el resumen de la semana, ahora mismo  |
+| `/hlladmin snapshot periodo:Mes`                           | manda el resumen del mes, ahora mismo       |
 
 
 ## Comandos disponibles para players
