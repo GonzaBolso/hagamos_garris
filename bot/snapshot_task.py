@@ -1,7 +1,7 @@
 """
 snapshot_task.py
 Tarea que corre dentro del bot (discord.ext.tasks) y manda, todos los días
-a las 23:29 hora UY, un mensaje con el Top 10 de cada categoría del día.
+a las 23:55 hora UY, un mensaje con el Top 10 de cada categoría del día.
 Si además es domingo, agrega también el Top 10 de la semana. Si es el
 último día del mes, agrega también el Top 10 del mes.
 
@@ -11,7 +11,7 @@ con un embed por categoría dentro de ese mensaje (Discord permite hasta
 
 ESPERA AL MAPA EN CURSO
 ------------------------
-Si a las 23:29 hay un mapa que YA ESTABA jugándose (arrancó antes de esa
+Si a las 23:55 hay un mapa que YA ESTABA jugándose (arrancó antes de esa
 hora), esa partida todavía no existe en la base — el collector solo
 procesa partidas cerradas. Para que el snapshot del día no se mande sin
 esa partida, se consulta get_public_info() y, si el mapa actual arrancó
@@ -24,8 +24,8 @@ Si pasan más de WAIT_MAX_MINUTES sin que el mapa cambie (server caído,
 ronda colgada, etc.), se manda el snapshot igual, sin esa partida —
 salvaguarda para no trabarse indefinidamente.
 
-Nota: una partida que arranca DESPUÉS de las 23:29 (ej. 23:40) no entra
-en este mecanismo — a las 23:29 el mapa en curso era otro, así que no hay
+Nota: una partida que arranca DESPUÉS de las 23:55 (ej. 23:58) no entra
+en este mecanismo — a las 23:55 el mapa en curso era otro, así que no hay
 nada que esperar para esa partida puntual. Sigue quedando fuera del
 snapshot del día, igual que del día siguiente (por start_time).
 """
@@ -42,7 +42,7 @@ from mini_collector import collect_new_matches
 log = logging.getLogger("snapshot_task")
 
 SNAPSHOT_HOUR = 23
-SNAPSHOT_MINUTE = 29
+SNAPSHOT_MINUTE = 55
 SNAPSHOT_LIMIT = 10
 
 # Margen de tolerancia: si el bot se reinicia y "se pierde" el minuto exacto
@@ -53,7 +53,7 @@ CATCHUP_WINDOW_MINUTES = 20
 
 # Tope máximo de espera por el mapa en curso antes de mandar el snapshot
 # igual, sin esa partida (salvaguarda ante cuelgues/bugs del server).
-WAIT_MAX_MINUTES = 60
+WAIT_MAX_MINUTES = 30
 
 
 def _is_last_day_of_month(d: datetime) -> bool:
@@ -178,7 +178,7 @@ async def run_snapshot_manual(bot, pool, guild_id: int, channel_id: int, period_
 def setup_snapshot_task(bot, pool, crcon_client):
     """
     Registra la tarea de loop que chequea cada minuto si es la hora de
-    disparar el snapshot (23:29 hora UY). Se debe llamar una vez al
+    disparar el snapshot (23:55 hora UY). Se debe llamar una vez al
     iniciar el bot, ej: setup_snapshot_task(bot, pool, crcon).start()
 
     crcon_client: instancia de CRCONClient ya inicializada (con start()
@@ -273,7 +273,7 @@ def setup_snapshot_task(bot, pool, crcon_client):
 
         target_ts = target_today.timestamp()
         if current_start < target_ts:
-            # El mapa actual ya estaba jugándose antes de las 23:29 ->
+            # El mapa actual ya estaba jugándose antes de las 23:55 ->
             # esperamos a que termine antes de mandar el snapshot.
             log.info(
                 f"Hay un mapa en curso que arrancó antes de las {SNAPSHOT_HOUR}:{SNAPSHOT_MINUTE:02d}; "

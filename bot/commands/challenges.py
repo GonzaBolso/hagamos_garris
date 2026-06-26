@@ -15,6 +15,7 @@ from discord import app_commands
 
 from checks import admin_only, player_or_admin
 from timeutils import format_local
+from leaderboards import TZ_UY
 
 
 METRIC_LABELS = {
@@ -30,11 +31,8 @@ METRIC_LABELS = {
 VALID_METRICS = set(METRIC_LABELS.keys())
 
 PERIOD_LABELS = {
-    "daily":         "Diario",
-    "weekly":        "Semanal",
     "custom":        "Personalizado",
     "current_match": "Partida actual",
-    "next_match":    "Próxima partida",
 }
 
 
@@ -62,17 +60,42 @@ def parse_metrics(metricas_str: str):
 
 
 def format_metrics_line(metrics: list) -> str:
-    """metrics: lista de dicts con 'metric' y 'target' (o tuplas)."""
+    """
+    metrics: lista de dicts o asyncpg.Record, cada uno con las claves
+    'metric' y 'target'. Ambos tipos soportan acceso por nombre (m["metric"]),
+    así que accedemos siempre así — NO por índice posicional, porque un
+    asyncpg.Record con columnas extra (ej. SELECT id, metric, target) tiene
+    posiciones distintas a un dict armado a mano con solo esas dos claves.
+    """
     parts = []
     for m in metrics:
-        metric = m["metric"] if isinstance(m, dict) else m[0]
-        target = m["target"] if isinstance(m, dict) else m[1]
+        metric = m["metric"]
+        target = m["target"]
         label = METRIC_LABELS.get(metric, metric)
         parts.append(f"{label} ≥ {float(target):g}")
     return " **Y** ".join(parts)
 
 
-def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Group, pool):
+def format_vence(r) -> str:
+    """
+    Devuelve el texto a mostrar para 'Vence'/'Partida' de un desafío, según
+    su período y estado actual. r: fila de challenges (dict o asyncpg.Record).
+    """
+    if r["end_date"]:
+        return format_local(r["end_date"], "%d/%m %H:%M")
+
+    if r["period"] == "current_match":
+        map_name = r["map_name"]
+        map_start = r["map_start"]
+        if map_name and map_start:
+            hora = datetime.fromtimestamp(map_start, tz=TZ_UY).strftime("%d/%m %H:%M")
+            return f"{map_name} (inició {hora})"
+        return "⏳ Esperando que arranque la próxima partida"
+
+    return PERIOD_LABELS.get(r["period"], r["period"])
+
+
+def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Group, pool, crcon_client):
     sub = app_commands.Group(name="desafio", description="Desafíos automáticos de stats", parent=hll_group)
     admin_sub = app_commands.Group(name="desafio", description="Administración de desafíos", parent=admin_group)
 
@@ -97,15 +120,12 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         nombre="Nombre del desafío (ej: 'Cazador de la semana')",
         metricas="kills, kd_ratio, matches, combat, offense, defense, support — ej: 'kills:20,kd_ratio:2'",
         periodo="Duración del desafío",
-        dias_custom="Si elegís 'Personalizado', cuántos días dura"
+        fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)"
     )
     @app_commands.choices(
         periodo=[
-            app_commands.Choice(name="Diario",            value="daily"),
-            app_commands.Choice(name="Semanal",           value="weekly"),
             app_commands.Choice(name="Personalizado",     value="custom"),
             app_commands.Choice(name="Partida actual",    value="current_match"),
-            app_commands.Choice(name="Próxima partida",   value="next_match"),
         ],
     )
     @admin_only()
@@ -113,7 +133,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     nombre: str,
                     metricas: str,
                     periodo: app_commands.Choice[str],
-                    dias_custom: int = 7):
+                    fecha_fin: str = None):
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -127,35 +147,86 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         start_date = now
         end_date = None  # se completa después según el período
 
-        if periodo.value == "daily":
-            end_date = now + timedelta(days=1)
-        elif periodo.value == "weekly":
-            end_date = now + timedelta(days=7)
-        elif periodo.value == "custom":
-            dias_custom = max(1, min(dias_custom, 90))
-            end_date = now + timedelta(days=dias_custom)
+        if periodo.value == "custom":
+            if not fecha_fin:
+                await interaction.followup.send(
+                    "❌ Para período Personalizado tenés que pasar `fecha_fin` "
+                    "(formato DD/MM/AAAA HH:MM:SS, ej: 01/07/2026 22:00:00).",
+                    ephemeral=True
+                )
+                return
+            try:
+                parsed_fin = datetime.strptime(fecha_fin.strip(), "%d/%m/%Y %H:%M:%S")
+            except ValueError:
+                await interaction.followup.send(
+                    "❌ Formato de `fecha_fin` inválido. Usá DD/MM/AAAA HH:MM:SS "
+                    "(ej: 01/07/2026 22:00:00).",
+                    ephemeral=True
+                )
+                return
+
+            end_date = parsed_fin.replace(tzinfo=TZ_UY).astimezone(timezone.utc)
+            if end_date <= now:
+                await interaction.followup.send(
+                    "❌ `fecha_fin` tiene que ser una fecha/hora futura.",
+                    ephemeral=True
+                )
+                return
         elif periodo.value == "current_match":
-            # Se resuelve contra la partida en curso; sin fecha de fin fija,
-            # el collector la cierra cuando detecta que la partida terminó.
-            start_date = None
+            # Se ancla directamente a la partida que está jugándose AHORA
+            # (no a la próxima): consultamos el mapa en curso y lo guardamos
+            # como map_name/map_start de una. El progreso en vivo de esa
+            # partida lo calcula el live_polling del collector mientras
+            # sigue en curso; cuando cierra, resolve_match_scope la
+            # encuentra en 'matches' por start_time y resuelve match_id.
+            start_date = now
             end_date = None
-        elif periodo.value == "next_match":
-            # Arranca a contar desde el próximo cambio de mapa.
-            start_date = None
-            end_date = None
+            try:
+                info = await crcon_client.get_public_info()
+                current_map = (info or {}).get("current_map") or {}
+                map_start = current_map.get("start")
+                map_name = (current_map.get("map") or {}).get("pretty_name") \
+                    or ((current_map.get("map") or {}).get("map") or {}).get("pretty_name") or "?"
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ No pude consultar el estado del servidor para crear este desafío: {e}",
+                    ephemeral=True
+                )
+                return
+
+            if map_start is None:
+                await interaction.followup.send(
+                    "❌ No hay ninguna partida en curso en este momento según el servidor. "
+                    "Probá de nuevo cuando haya un mapa corriendo.",
+                    ephemeral=True
+                )
+                return
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO challenges
-                        (guild_id, name, description, period, start_date, end_date, match_id, created_by)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    RETURNING id
-                    """,
-                    interaction.guild_id, nombre, None, periodo.value,
-                    start_date, end_date, match_id, interaction.user.id
-                )
+                if periodo.value == "current_match":
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO challenges
+                            (guild_id, name, description, period, start_date, end_date,
+                             match_id, created_by, map_name, map_start)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        RETURNING id
+                        """,
+                        interaction.guild_id, nombre, None, periodo.value,
+                        start_date, end_date, match_id, interaction.user.id, map_name, map_start
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO challenges
+                            (guild_id, name, description, period, start_date, end_date, match_id, created_by)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        RETURNING id
+                        """,
+                        interaction.guild_id, nombre, None, periodo.value,
+                        start_date, end_date, match_id, interaction.user.id
+                    )
                 challenge_id = row["id"]
 
                 for metric, target in parsed_metrics:
@@ -168,7 +239,11 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             [{"metric": m, "target": t} for m, t in parsed_metrics]
         )
 
-        vence_txt = format_local(end_date) if end_date else f"({PERIOD_LABELS[periodo.value]})"
+        if periodo.value == "current_match":
+            hora_inicio = datetime.fromtimestamp(map_start, tz=TZ_UY).strftime("%d/%m %H:%M")
+            vence_txt = f"{map_name} (inició {hora_inicio})"
+        else:
+            vence_txt = format_local(end_date) if end_date else f"({PERIOD_LABELS[periodo.value]})"
 
         await interaction.followup.send(
             f"✅ Desafío **#{challenge_id} — {nombre}** creado.\n"
@@ -204,7 +279,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     r["id"]
                 )
                 metrics_line = format_metrics_line(metrics)
-                vence = format_local(r["end_date"], "%d/%m %H:%M") if r["end_date"] else PERIOD_LABELS.get(r["period"], r["period"])
+                vence = format_vence(r)
                 embed.add_field(
                     name=f"#{r['id']} — {r['name']}",
                     value=f"{metrics_line}\nVence: {vence}",
@@ -275,10 +350,11 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             lines.append(f"{medal} **{r['player_name']}**{check}")
 
         completed_count = sum(1 for r in overall if r["completed"])
+        vence_info = format_vence(challenge)
 
         embed = discord.Embed(
             title=f"🎯 #{id} — {challenge['name']}",
-            description=f"Condición: {metrics_line}\n\n" + "\n".join(lines),
+            description=f"Condición: {metrics_line}\nPartida: {vence_info}\n\n" + "\n".join(lines),
             color=0xF1C40F
         )
         embed.set_footer(text=f"{completed_count} jugador(es) completaron el desafío")

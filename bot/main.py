@@ -40,7 +40,7 @@ class HLLBot(commands.Bot):
     async def setup_hook(self):
         await crcon.start()
         hll_group, hlladmin_group = setup_hll(self, self.pool)
-        setup_challenges(hll_group, hlladmin_group, self.pool)
+        setup_challenges(hll_group, hlladmin_group, self.pool, crcon)
         self.tree.add_command(hll_group)
         self.tree.add_command(hlladmin_group)
         setup_stats(self, self.pool)
@@ -66,7 +66,7 @@ class HLLBot(commands.Bot):
 
         self.snapshot_loop = setup_snapshot_task(self, self.pool, crcon)
         self.snapshot_loop.start()
-        log.info("Tarea de snapshots automáticos iniciada (23:29 hora UY)")
+        log.info("Tarea de snapshots automáticos iniciada (23:55 hora UY)")
 
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
