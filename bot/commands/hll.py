@@ -357,12 +357,12 @@ def setup_hll(bot: commands.Bot, pool):
 
         entry = next((v for v in (vips or []) if v.get("player_id") == row["steam_id"]), None)
         if entry:
-            desc    = entry.get("description", "")
-            expires = entry.get("expiration") or "Sin vencimiento"
+            nombre_vip = entry.get("name", "")
+            vence_txt  = format_vip_expiration(entry.get("vip_expiration"))
             await interaction.followup.send(
                 f"⭐ **Tenés VIP activo**\n"
-                f"Descripción: {desc or '—'}\n"
-                f"Vence: {expires}", ephemeral=True
+                f"Nombre VIP: {nombre_vip or '—'}\n"
+                f"Vence: {vence_txt}", ephemeral=True
             )
         else:
             await interaction.followup.send("❌ No tenés VIP en este servidor.", ephemeral=True)
