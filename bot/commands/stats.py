@@ -69,18 +69,25 @@ def setup_stats(bot: commands.Bot, pool):
             if not r:
                 return ""
             rank, total = r
-            return f"\n\n#{rank} de {total}"
+            return f" (#{rank} de {total})"
 
-        embed = discord.Embed(title=f"📊 Stats de {row['last_name']}", color=0x5865F2)
-        embed.add_field(name="🎮 Partidas",  value=str(row["matches_played"]), inline=True)
-        embed.add_field(name="💀 Kills",     value=f"{row['total_kills']}{rank_suffix('total_kills')}",    inline=True)
-        embed.add_field(name="☠️ Deaths",    value=str(row["total_deaths"]),   inline=True)
-        embed.add_field(name="⚔️ K/D",       value=f"{row['kd_ratio']}{rank_suffix('kd_ratio')}",       inline=True)
-        embed.add_field(name="🔥 Combat",    value=f"{row['total_combat']}{rank_suffix('total_combat')}",   inline=True)
-        embed.add_field(name="⚔️ Offense",   value=f"{row['total_offense']}{rank_suffix('total_offense')}",  inline=True)
-        embed.add_field(name="🛡️ Defense",   value=f"{row['total_defense']}{rank_suffix('total_defense')}",  inline=True)
-        embed.add_field(name="🤝 Support",   value=f"{row['total_support']}{rank_suffix('total_support')}",  inline=True)
-        embed.add_field(name="⏱️ Horas",     value=f"{total_h}h",             inline=True)
+        stats_lines = [
+            f"🎮 **Partidas:** {row['matches_played']}{rank_suffix('matches_played')}",
+            f"💀 **Kills:** {row['total_kills']}{rank_suffix('total_kills')}",
+            f"☠️ **Deaths:** {row['total_deaths']}",
+            f"⚔️ **K/D:** {row['kd_ratio']}{rank_suffix('kd_ratio')}",
+            f"🔥 **Combat:** {row['total_combat']}{rank_suffix('total_combat')}",
+            f"⚔️ **Offense:** {row['total_offense']}{rank_suffix('total_offense')}",
+            f"🛡️ **Defense:** {row['total_defense']}{rank_suffix('total_defense')}",
+            f"🤝 **Support:** {row['total_support']}{rank_suffix('total_support')}",
+            f"⏱️ **Horas:** {total_h}h{rank_suffix('total_time_seconds')}",
+        ]
+
+        embed = discord.Embed(
+            title=f"📊 Stats de {row['last_name']}",
+            description="\n".join(stats_lines),
+            color=0x5865F2
+        )
 
         if top_weapons:
             weapons_str = "\n".join(

@@ -32,16 +32,17 @@ async def get_player_ranks(pool, steam_id: str) -> dict:
     player_totals, excluyendo de cada ranking a los jugadores con 0 en
     esa columna específica (no un mínimo de partidas — un jugador con
     0 kills no entra al ranking de Kills, pero si tiene Support > 0 sí
-    entra al de Support).
+    entra al de Support). Incluye matches_played y total_time_seconds
+    (horas jugadas), además de las columnas de CATEGORIES.
 
     Devuelve {column: (rank, total_jugadores_en_ese_ranking) | None}.
     None si el jugador no tiene ese valor > 0 (no rankeado en esa categoría).
     """
+    rankable_columns = [col for _, col, *_ in CATEGORIES] + ["total_time_seconds"]
+
     ranks = {}
     async with pool.acquire() as conn:
-        for _, col, *_ in CATEGORIES:
-            if col == "matches_played":
-                continue  # no tiene mucho sentido "rankear" cantidad de partidas acá
+        for col in rankable_columns:
             row = await conn.fetchrow(
                 f"""
                 SELECT rank, total FROM (
