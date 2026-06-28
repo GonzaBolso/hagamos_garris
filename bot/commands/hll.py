@@ -436,7 +436,8 @@ def setup_hll(bot: commands.Bot, pool):
             return
 
         lines = [
-            f"`{i+1}.` **{r['player_name'] or r['steam_id']}** — {r['kills']} kills"
+            f"`{i+1}.` **{r['player_name'] or r['steam_id']}** — {r['kills']} kills "
+            f"· {r['matches']} partida{'s' if r['matches'] != 1 else ''}"
             for i, r in enumerate(rows)
         ]
 

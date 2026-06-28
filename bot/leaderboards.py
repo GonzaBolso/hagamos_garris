@@ -78,12 +78,15 @@ HLL_WEAPONS = [
 async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
     """
     Devuelve el Top N de jugadores con más kills usando un arma exacta,
-    para /hll weapon. Lista de dicts {steam_id, player_name, kills}.
+    para /hll weapon. Lista de dicts {steam_id, player_name, kills, matches}.
+    'matches' es la cantidad de partidas distintas en las que usó esa
+    arma al menos una vez (no partidas jugadas en total).
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT killer_id AS steam_id, MAX(killer_name) AS player_name, COUNT(*) AS kills
+            SELECT killer_id AS steam_id, MAX(killer_name) AS player_name,
+                   COUNT(*) AS kills, COUNT(DISTINCT match_id) AS matches
             FROM kill_events
             WHERE weapon = $1
             GROUP BY killer_id
@@ -92,7 +95,11 @@ async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
             """,
             weapon, limit
         )
-    return [{"steam_id": r["steam_id"], "player_name": r["player_name"], "kills": r["kills"]} for r in rows]
+    return [
+        {"steam_id": r["steam_id"], "player_name": r["player_name"],
+         "kills": r["kills"], "matches": r["matches"]}
+        for r in rows
+    ]
 
 
 async def get_player_ranks(pool, steam_id: str) -> dict:
