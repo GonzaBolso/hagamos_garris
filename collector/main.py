@@ -37,7 +37,12 @@ if CRCON_API_KEY:
 def parse_dt(s):
     if not s:
         return None
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        # CRCON manda timestamps naive; asumimos UTC (consistente con los
+        # epoch de start/end de get_scoreboard_maps, que sí son UTC).
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 async def fetch_scoreboard_maps(session: aiohttp.ClientSession, page: int = 1) -> dict:
@@ -74,6 +79,82 @@ async def fetch_live_game_stats(session: aiohttp.ClientSession) -> dict:
         if data.get("failed"):
             raise RuntimeError(f"get_live_game_stats falló: {data.get('error')}")
         return data.get("result", {})
+
+
+async def fetch_historical_logs(session: aiohttp.ClientSession, from_: str = None,
+                                 till: str = None, limit: int = 500) -> list:
+    """
+    Consulta get_historical_logs (endpoint POST). Devuelve la lista de
+    eventos (result) sin filtrar — el caller decide qué 'type' usar
+    (ej. solo 'KILL', sin 'TEAM KILL').
+    from_/till: strings ISO datetime, o None para no acotar ese extremo.
+    """
+    url = f"{CRCON_URL}/api/get_historical_logs"
+    body = {
+        "player_name": "",
+        "action": "",
+        "player_id": "",
+        "from": from_,
+        "till": till,
+        "limit": limit,
+        "time_sort": "desc",
+        "exact_player": False,
+        "exact_action": False,
+        "server_filter": "",
+    }
+    async with session.post(url, json=body) as resp:
+        data = await resp.json()
+        if data.get("failed"):
+            raise RuntimeError(f"get_historical_logs falló: {data.get('error')}")
+        return data.get("result") or []
+
+
+async def save_kill_events_for_match(conn, session: aiohttp.ClientSession,
+                                      match_id: str, start_iso: str, end_iso: str):
+    """
+    Al cerrar una partida, consulta get_historical_logs acotado al rango
+    de esa partida (start/end), y guarda cada KILL (no TEAM KILL) en
+    kill_events, asociado a match_id. Se usa para desafíos tipo
+    'kills_weapon' (matar con un arma específica) y 'kills_player'
+    (matar repetidamente a un jugador puntual).
+    """
+    if not start_iso:
+        return  # sin start no podemos acotar el rango, mejor no traer nada
+
+    try:
+        events = await fetch_historical_logs(session, from_=start_iso, till=end_iso, limit=1000)
+    except Exception as e:
+        log.warning(f"  No se pudo obtener historical_logs para partida {match_id}: {e}")
+        return
+
+    saved = 0
+    for ev in events:
+        if ev.get("type") != "KILL":
+            continue  # excluye TEAM KILL y todo lo demás
+
+        killer_id = ev.get("player1_id")
+        victim_id = ev.get("player2_id")
+        if not killer_id or not victim_id:
+            continue
+
+        await conn.execute(
+            """
+            INSERT INTO kill_events
+                (match_id, event_time, killer_id, killer_name, victim_id, victim_name, weapon)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            match_id,
+            parse_dt(ev.get("event_time")),
+            killer_id,
+            ev.get("player1_name", ""),
+            victim_id,
+            ev.get("player2_name", ""),
+            ev.get("weapon"),
+        )
+        saved += 1
+
+    if saved:
+        log.info(f"  [{match_id}] {saved} kill_events guardados")
 
 
 async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps: list) -> int:
@@ -153,8 +234,24 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                     time_sec,
                 )
 
+                # Mantiene actualizada la lista de jugadores conocidos
+                # (usada para el autocompletado por nombre en desafíos).
+                await conn.execute(
+                    """
+                    INSERT INTO players (steam_id, player_name)
+                    VALUES ($1, $2)
+                    ON CONFLICT (steam_id) DO UPDATE SET player_name = $2
+                    """,
+                    steam_id, p.get("player", ""),
+                )
+
             player_count = len([p for p in players if int(p.get("time_seconds") or 0) > 0])
             log.info(f"  Nueva: [{match_id}] {map_name} — {player_count} jugadores")
+
+            await save_kill_events_for_match(
+                conn, session, match_id, m.get("start"), m.get("end")
+            )
+
             new_count += 1
 
             # Pequeña pausa para no martillar la API
@@ -176,12 +273,34 @@ METRIC_COLUMN = {
 
 
 async def fetch_metric_values(conn, metric: str, match_ids: list = None,
-                               start_date=None, end_date=None) -> list:
+                               start_date=None, end_date=None, param: str = None) -> list:
     """
     Devuelve [{steam_id, player_name, value}, ...] para una métrica dada,
     filtrando por una lista explícita de match_id (partidas puntuales)
     o por rango de fechas [start_date, end_date].
+    kills_weapon/kills_player necesitan 'param' (arma exacta, o steam_id
+    de la víctima) y consultan kill_events en vez de match_player_stats.
     """
+    if metric in ("kills_weapon", "kills_player"):
+        if not param:
+            return []
+        filter_col = "weapon" if metric == "kills_weapon" else "victim_id"
+        if match_ids is not None:
+            where_clause = f"ke.match_id = ANY($1::varchar[]) AND ke.{filter_col} = $2"
+            params = [match_ids, param]
+        else:
+            where_clause = f"m.start_time BETWEEN $1 AND $2 AND ke.{filter_col} = $3"
+            params = [start_date, end_date, param]
+        query = f"""
+            SELECT ke.killer_id AS steam_id, MAX(ke.killer_name) AS player_name,
+                   COUNT(*) AS value
+            FROM kill_events ke
+            JOIN matches m USING (match_id)
+            WHERE {where_clause}
+            GROUP BY ke.killer_id
+        """
+        return await conn.fetch(query, *params)
+
     col = METRIC_COLUMN.get(metric)
 
     if match_ids is not None:
@@ -260,17 +379,66 @@ def aggregate_live_stats_by_player(live_result: dict) -> dict:
 
 async def compute_combined_metric_values(conn, metric: str, live_by_player: dict,
                                           match_ids: list = None,
-                                          start_date=None, end_date=None) -> list:
+                                          start_date=None, end_date=None,
+                                          param: str = None,
+                                          live_kills_by_player: dict = None) -> list:
     """
     Igual que fetch_metric_values, pero sumándole el aporte de la partida
     en vivo (live_by_player, ya armado por aggregate_live_stats_by_player)
     a cada jugador. Para kd_ratio, combina kills+deaths de ambas fuentes
     antes de calcular el ratio (más preciso que combinar dos ratios).
 
+    kills_weapon/kills_player: cuentan filas de kill_events (cerrado) +
+    el cursor en memoria de kills en vivo (live_kills_by_player), filtrando
+    por arma exacta (param) o por steam_id de víctima (param).
+
     Devuelve una lista de dicts {steam_id, player_name, value} — mismo
     formato que fetch_metric_values, para que el resto del código no
     necesite distinguir entre "con live" y "sin live".
     """
+    live_kills_by_player = live_kills_by_player or {}
+
+    if metric in ("kills_weapon", "kills_player"):
+        if not param:
+            return []  # sin arma/jugador especificado no hay nada que contar
+
+        filter_col = "weapon" if metric == "kills_weapon" else "victim_id"
+
+        if match_ids is not None:
+            where_clause = f"ke.match_id = ANY($1::varchar[]) AND ke.{filter_col} = $2"
+            params = [match_ids, param]
+        else:
+            where_clause = f"m.start_time BETWEEN $1 AND $2 AND ke.{filter_col} = $3"
+            params = [start_date, end_date, param]
+
+        closed = await conn.fetch(
+            f"""
+            SELECT ke.killer_id AS steam_id, MAX(ke.killer_name) AS player_name,
+                   COUNT(*) AS value
+            FROM kill_events ke
+            JOIN matches m USING (match_id)
+            WHERE {where_clause}
+            GROUP BY ke.killer_id
+            """,
+            *params
+        )
+        closed_by_player = {r["steam_id"]: (r["value"] or 0) for r in closed}
+        names_by_player = {r["steam_id"]: r["player_name"] for r in closed}
+
+        live_field = "by_weapon" if metric == "kills_weapon" else "by_victim"
+        all_steam_ids = set(closed_by_player) | set(live_kills_by_player)
+        results = []
+        for steam_id in all_steam_ids:
+            live_value = live_kills_by_player.get(steam_id, {}).get(live_field, {}).get(param, 0)
+            total = closed_by_player.get(steam_id, 0) + live_value
+            player_name = (
+                names_by_player.get(steam_id)
+                or live_kills_by_player.get(steam_id, {}).get("player_name")
+                or steam_id
+            )
+            results.append({"steam_id": steam_id, "player_name": player_name, "value": total})
+        return results
+
     if metric == "kd_ratio":
         # Necesitamos kills y deaths de lo cerrado por separado para
         # combinarlos correctamente con el live.
@@ -379,6 +547,60 @@ async def resolve_match_scope(conn, challenge) -> tuple:
     return [closed["match_id"]], True
 
 
+async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int, map_start_dt) -> dict:
+    """
+    Mantiene _live_kills_state al día para la partida en curso (map_start).
+    Si cambió la partida, resetea el estado. Consulta solo los KILL nuevos
+    desde el último evento ya contado (cursor por event_time), evitando
+    contar el mismo kill dos veces entre ciclos sucesivos.
+
+    Devuelve kills_by_player: steam_id -> {
+        "by_weapon": {weapon: count}, "by_victim": {victim_id: count}
+    }
+    """
+    if _live_kills_state["map_start"] != map_start:
+        _live_kills_state["map_start"] = map_start
+        _live_kills_state["last_event_time"] = map_start_dt
+        _live_kills_state["kills_by_player"] = {}
+
+    from_iso = _live_kills_state["last_event_time"].isoformat() if _live_kills_state["last_event_time"] else None
+
+    try:
+        events = await fetch_historical_logs(session, from_=from_iso, limit=500)
+    except Exception as e:
+        log.warning(f"  [live] get_historical_logs falló: {e}")
+        return _live_kills_state["kills_by_player"]
+
+    newest_time = _live_kills_state["last_event_time"]
+    for ev in events:
+        if ev.get("type") != "KILL":
+            continue
+        killer_id = ev.get("player1_id")
+        victim_id = ev.get("player2_id")
+        weapon = ev.get("weapon")
+        if not killer_id or not victim_id:
+            continue
+
+        ev_time = parse_dt(ev.get("event_time"))
+        if ev_time and (newest_time is None or ev_time > newest_time):
+            newest_time = ev_time
+
+        player_state = _live_kills_state["kills_by_player"].setdefault(
+            killer_id, {"player_name": None, "by_weapon": {}, "by_victim": {}}
+        )
+        killer_name = ev.get("player1_name")
+        if killer_name:
+            player_state["player_name"] = killer_name
+        if weapon:
+            player_state["by_weapon"][weapon] = player_state["by_weapon"].get(weapon, 0) + 1
+        player_state["by_victim"][victim_id] = player_state["by_victim"].get(victim_id, 0) + 1
+
+    if newest_time:
+        _live_kills_state["last_event_time"] = newest_time
+
+    return _live_kills_state["kills_by_player"]
+
+
 async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSession):
     """
     Corre cada ~20-30 seg (loop separado del ciclo principal de 10-30 min).
@@ -432,9 +654,26 @@ async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSe
         if not live_by_player:
             return  # partida sin jugadores con datos todavía (recién arrancó)
 
+        # Solo consultamos los logs de kills en vivo si hace falta (algún
+        # desafío elegible usa kills_weapon/kills_player) — evita pegarle
+        # a get_historical_logs cuando no hace falta.
+        needs_kill_logs = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM challenge_metrics cm
+                JOIN challenges c ON c.id = cm.challenge_id
+                WHERE c.id = ANY($1::int[]) AND cm.metric IN ('kills_weapon', 'kills_player')
+            )
+            """,
+            [ch["id"] for ch in eligible]
+        )
+        live_kills_by_player = {}
+        if needs_kill_logs:
+            live_kills_by_player = await update_live_kills_state(session, map_start, map_start_dt)
+
         for ch in eligible:
             metrics = await conn.fetch(
-                "SELECT id, metric, target FROM challenge_metrics WHERE challenge_id = $1",
+                "SELECT id, metric, target, param FROM challenge_metrics WHERE challenge_id = $1",
                 ch["id"]
             )
             if not metrics:
@@ -442,18 +681,16 @@ async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSe
 
             player_completion = {}
             player_names = {}
-            # steam_id -> [(metric_name, value, target), ...] — solo para el log
-            player_values_log = {}
 
             for metric_row in metrics:
                 values = await compute_combined_metric_values(
                     conn, metric_row["metric"], live_by_player,
-                    match_ids=None, start_date=ch["start_date"], end_date=ch["end_date"]
+                    match_ids=None, start_date=ch["start_date"], end_date=ch["end_date"],
+                    param=metric_row["param"], live_kills_by_player=live_kills_by_player
                 )
                 for r in values:
                     value = float(r["value"] or 0)
-                    target = float(metric_row["target"])
-                    completed = value >= target
+                    completed = value >= float(metric_row["target"])
                     steam_id = r["steam_id"]
                     player_names[steam_id] = r["player_name"]
 
@@ -468,9 +705,6 @@ async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSe
                         metric_row["id"], steam_id, r["player_name"], value, completed
                     )
                     player_completion.setdefault(steam_id, []).append(completed)
-                    player_values_log.setdefault(steam_id, []).append(
-                        (metric_row["metric"], value, target)
-                    )
 
             for steam_id, flags in player_completion.items():
                 all_completed = all(flags) and len(flags) == len(metrics)
@@ -492,14 +726,47 @@ async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSe
                     ch["id"], steam_id, player_names.get(steam_id), all_completed
                 )
 
-            if player_values_log:
-                resumen = "; ".join(
-                    f"{player_names.get(sid, sid)}: " + ", ".join(
-                        f"{m}={v:.0f}/{t:.0f}" for m, v, t in vals
-                    )
-                    for sid, vals in player_values_log.items()
-                )
-                log.info(f"  [live] #{ch['id']} '{ch['name']}' — {resumen}")
+
+async def expire_stale_close_notifications(conn):
+    """
+    Si un desafío se cerró pero el guild nunca configuró challenge_channel_id
+    (o el bot no pudo mandar el mensaje por algún motivo), la notificación
+    quedaría pendiente para siempre. Después de 30 minutos sin poder
+    enviarse, se descarta (se apaga la marca, sin mandar nada).
+    """
+    result = await conn.execute(
+        """
+        UPDATE challenges
+        SET pending_close_notification = FALSE
+        WHERE pending_close_notification = TRUE
+          AND closed_at IS NOT NULL
+          AND closed_at <= NOW() - INTERVAL '30 minutes'
+        """
+    )
+    if result != "UPDATE 0":
+        log.info(f"  Notificaciones de cierre descartadas por vencimiento (30 min sin canal configurado): {result}")
+
+
+async def close_expired_custom_challenges(conn):
+    """
+    Los desafíos 'custom' tienen una fecha_fin fija (end_date). Hasta ahora,
+    al vencer simplemente dejaban de actualizarse (el query principal los
+    excluye con end_date > NOW()), pero quedaban con active=TRUE para
+    siempre, sin cerrarse de verdad. Esto los cierra y marca la
+    notificación pendiente, igual que se hace con current_match.
+    """
+    expired = await conn.fetch(
+        """
+        SELECT id, name FROM challenges
+        WHERE active = TRUE AND period = 'custom' AND end_date <= NOW()
+        """
+    )
+    for ch in expired:
+        await conn.execute(
+            "UPDATE challenges SET active = FALSE, pending_close_notification = TRUE, closed_at = NOW() WHERE id = $1",
+            ch["id"]
+        )
+        log.info(f"  Desafío '{ch['name']}' (#{ch['id']}) cerrado: venció su fecha_fin")
 
 
 async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.ClientSession):
@@ -509,6 +776,9 @@ async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.Client
     y períodos por fecha (custom) o por partida (current_match).
     """
     async with pool.acquire() as conn:
+        await close_expired_custom_challenges(conn)
+        await expire_stale_close_notifications(conn)
+
         challenges = await conn.fetch(
             """
             SELECT * FROM challenges
@@ -529,7 +799,7 @@ async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.Client
                     continue  # todavía pendiente o la partida sigue en curso
 
             metrics = await conn.fetch(
-                "SELECT id, metric, target FROM challenge_metrics WHERE challenge_id = $1",
+                "SELECT id, metric, target, param FROM challenge_metrics WHERE challenge_id = $1",
                 ch["id"]
             )
             if not metrics:
@@ -543,7 +813,8 @@ async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.Client
             for metric_row in metrics:
                 values = await fetch_metric_values(
                     conn, metric_row["metric"],
-                    match_ids=match_ids, start_date=start_date, end_date=end_date
+                    match_ids=match_ids, start_date=start_date, end_date=end_date,
+                    param=metric_row["param"]
                 )
                 touched_players = max(touched_players, len(values))
 
@@ -593,13 +864,19 @@ async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.Client
 
             if should_close:
                 await conn.execute(
-                    "UPDATE challenges SET active = FALSE, end_date = NOW() WHERE id = $1",
+                    "UPDATE challenges SET active = FALSE, pending_close_notification = TRUE, closed_at = NOW() WHERE id = $1",
                     ch["id"]
                 )
                 log.info(f"  Desafío '{ch['name']}' (#{ch['id']}) cerrado: terminó la partida asociada")
 
 
 LIVE_POLL_INTERVAL_SECONDS = 25
+
+# Estado del cursor de kills en vivo para la partida actual. Se resetea
+# automáticamente cuando cambia map_start (otra partida). steam_id -> {
+#   "by_weapon": {weapon: count}, "by_victim": {victim_id: count}
+# }
+_live_kills_state = {"map_start": None, "last_event_time": None, "kills_by_player": {}}
 
 
 async def main_collector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):

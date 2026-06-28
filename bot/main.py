@@ -15,6 +15,7 @@ from commands.hll import setup_hll
 from commands.stats import setup_stats
 from commands.challenges import setup_challenges
 from snapshot_task import setup_snapshot_task
+from challenge_close_task import setup_challenge_close_task
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -68,6 +69,10 @@ class HLLBot(commands.Bot):
         self.snapshot_loop.start()
         log.info("Tarea de snapshots automáticos iniciada (23:55 hora UY)")
 
+        self.challenge_close_loop = setup_challenge_close_task(self, self.pool)
+        self.challenge_close_loop.start()
+        log.info("Tarea de notificación de cierre de desafíos iniciada (cada 1 min)")
+
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
         await self.change_presence(
@@ -80,6 +85,8 @@ class HLLBot(commands.Bot):
     async def close(self):
         if hasattr(self, "snapshot_loop"):
             self.snapshot_loop.cancel()
+        if hasattr(self, "challenge_close_loop"):
+            self.challenge_close_loop.cancel()
         await crcon.close()
         await super().close()
 

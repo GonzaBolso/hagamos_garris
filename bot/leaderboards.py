@@ -25,6 +25,39 @@ CATEGORIES = [
 
 CATEGORY_BY_COLUMN = {col: (name, color, icon, value_label) for name, col, color, icon, value_label in CATEGORIES}
 
+
+async def get_player_ranks(pool, steam_id: str) -> dict:
+    """
+    Calcula la posición (rank) del jugador en cada categoría de
+    player_totals, excluyendo de cada ranking a los jugadores con 0 en
+    esa columna específica (no un mínimo de partidas — un jugador con
+    0 kills no entra al ranking de Kills, pero si tiene Support > 0 sí
+    entra al de Support).
+
+    Devuelve {column: (rank, total_jugadores_en_ese_ranking) | None}.
+    None si el jugador no tiene ese valor > 0 (no rankeado en esa categoría).
+    """
+    ranks = {}
+    async with pool.acquire() as conn:
+        for _, col, *_ in CATEGORIES:
+            if col == "matches_played":
+                continue  # no tiene mucho sentido "rankear" cantidad de partidas acá
+            row = await conn.fetchrow(
+                f"""
+                SELECT rank, total FROM (
+                    SELECT steam_id,
+                           RANK() OVER (ORDER BY {col} DESC) AS rank,
+                           COUNT(*) OVER () AS total
+                    FROM player_totals
+                    WHERE {col} > 0
+                ) ranked
+                WHERE steam_id = $1
+                """,
+                steam_id
+            )
+            ranks[col] = (row["rank"], row["total"]) if row else None
+    return ranks
+
 PERIOD_LABELS = {
     "all":   "Histórico",
     "day":   "Día",

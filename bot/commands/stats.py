@@ -8,6 +8,27 @@ from discord.ext import commands
 
 from checks import player_or_admin
 from timeutils import format_local
+from leaderboards import get_player_ranks
+
+
+async def get_top_weapons(pool, steam_id: str, limit: int = 3) -> list:
+    """
+    Devuelve las armas con más kills del jugador, ordenadas de mayor a
+    menor. Lista de dicts {weapon, kills}.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT weapon, COUNT(*) AS kills
+            FROM kill_events
+            WHERE killer_id = $1 AND weapon IS NOT NULL
+            GROUP BY weapon
+            ORDER BY kills DESC
+            LIMIT $2
+            """,
+            steam_id, limit
+        )
+    return [{"weapon": r["weapon"], "kills": r["kills"]} for r in rows]
 
 
 def setup_stats(bot: commands.Bot, pool):
@@ -40,17 +61,34 @@ def setup_stats(bot: commands.Bot, pool):
             return
 
         total_h = round((row["total_time_seconds"] or 0) / 3600, 1)
+        ranks = await get_player_ranks(pool, link["steam_id"])
+        top_weapons = await get_top_weapons(pool, link["steam_id"], limit=3)
+
+        def rank_suffix(col: str) -> str:
+            r = ranks.get(col)
+            if not r:
+                return ""
+            rank, total = r
+            return f"\n\n#{rank} de {total}"
 
         embed = discord.Embed(title=f"📊 Stats de {row['last_name']}", color=0x5865F2)
         embed.add_field(name="🎮 Partidas",  value=str(row["matches_played"]), inline=True)
-        embed.add_field(name="💀 Kills",     value=str(row["total_kills"]),    inline=True)
+        embed.add_field(name="💀 Kills",     value=f"{row['total_kills']}{rank_suffix('total_kills')}",    inline=True)
         embed.add_field(name="☠️ Deaths",    value=str(row["total_deaths"]),   inline=True)
-        embed.add_field(name="⚔️ K/D",       value=str(row["kd_ratio"]),       inline=True)
-        embed.add_field(name="🔥 Combat",    value=str(row["total_combat"]),   inline=True)
-        embed.add_field(name="⚔️ Offense",   value=str(row["total_offense"]),  inline=True)
-        embed.add_field(name="🛡️ Defense",   value=str(row["total_defense"]),  inline=True)
-        embed.add_field(name="🤝 Support",   value=str(row["total_support"]),  inline=True)
+        embed.add_field(name="⚔️ K/D",       value=f"{row['kd_ratio']}{rank_suffix('kd_ratio')}",       inline=True)
+        embed.add_field(name="🔥 Combat",    value=f"{row['total_combat']}{rank_suffix('total_combat')}",   inline=True)
+        embed.add_field(name="⚔️ Offense",   value=f"{row['total_offense']}{rank_suffix('total_offense')}",  inline=True)
+        embed.add_field(name="🛡️ Defense",   value=f"{row['total_defense']}{rank_suffix('total_defense')}",  inline=True)
+        embed.add_field(name="🤝 Support",   value=f"{row['total_support']}{rank_suffix('total_support')}",  inline=True)
         embed.add_field(name="⏱️ Horas",     value=f"{total_h}h",             inline=True)
+
+        if top_weapons:
+            weapons_str = "\n".join(
+                f"`{i+1}.` {w['weapon']} — **{w['kills']}** kills"
+                for i, w in enumerate(top_weapons)
+            )
+            embed.add_field(name="🔫 Top armas", value=weapons_str, inline=False)
+
         embed.set_footer(text=f"Steam ID: {link['steam_id']}")
         await interaction.followup.send(embed=embed)
 

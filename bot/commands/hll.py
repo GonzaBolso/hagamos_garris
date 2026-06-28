@@ -64,36 +64,36 @@ def setup_hll(bot: commands.Bot, pool):
     @admin_group.command(name="setchannel", description="Configura los canales del bot")
     @app_commands.describe(
         canal="Canal donde los jugadores podrán usar los comandos",
-        canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)"
+        canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)",
+        canal_desafios="Canal donde se manda la foto final cuando se cierra un desafío (opcional)"
     )
     @admin_only()
     async def setchannel(interaction: discord.Interaction,
                           canal: discord.TextChannel,
-                          canal_snapshots: discord.TextChannel = None):
+                          canal_snapshots: discord.TextChannel = None,
+                          canal_desafios: discord.TextChannel = None):
+        snapshots_id = canal_snapshots.id if canal_snapshots is not None else None
+        desafios_id = canal_desafios.id if canal_desafios is not None else None
+
         async with pool.acquire() as conn:
-            if canal_snapshots is not None:
-                await conn.execute(
-                    """
-                    INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (guild_id) DO UPDATE
-                        SET stats_channel_id = $2, snapshot_channel_id = $3, updated_at = NOW()
-                    """,
-                    interaction.guild_id, canal.id, canal_snapshots.id
-                )
-            else:
-                await conn.execute(
-                    """
-                    INSERT INTO guild_config (guild_id, stats_channel_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT (guild_id) DO UPDATE SET stats_channel_id = $2, updated_at = NOW()
-                    """,
-                    interaction.guild_id, canal.id
-                )
+            await conn.execute(
+                """
+                INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id, challenge_channel_id)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (guild_id) DO UPDATE
+                    SET stats_channel_id = $2,
+                        snapshot_channel_id = COALESCE($3, guild_config.snapshot_channel_id),
+                        challenge_channel_id = COALESCE($4, guild_config.challenge_channel_id),
+                        updated_at = NOW()
+                """,
+                interaction.guild_id, canal.id, snapshots_id, desafios_id
+            )
 
         msg = f"✅ Canal de jugadores configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí."
         if canal_snapshots is not None:
             msg += f"\n✅ Canal de snapshots automáticos: {canal_snapshots.mention}"
+        if canal_desafios is not None:
+            msg += f"\n✅ Canal de cierre de desafíos: {canal_desafios.mention}"
         await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /hlladmin setroles ──────────────────────────────────────
@@ -141,12 +141,14 @@ def setup_hll(bot: commands.Bot, pool):
 
         channel = interaction.guild.get_channel(row["stats_channel_id"]) if row["stats_channel_id"] else None
         snapshot_channel = interaction.guild.get_channel(row["snapshot_channel_id"]) if row.get("snapshot_channel_id") else None
+        challenge_channel = interaction.guild.get_channel(row["challenge_channel_id"]) if row.get("challenge_channel_id") else None
         admin_role  = interaction.guild.get_role(row["admin_role_id"])  if row["admin_role_id"]  else None
         player_role = interaction.guild.get_role(row["mod_role_id"])    if row["mod_role_id"]    else None
 
         embed = discord.Embed(title="⚙️ Configuración del Bot", color=0x5865F2)
         embed.add_field(name="Canal jugadores", value=channel.mention  if channel     else "No configurado", inline=False)
         embed.add_field(name="Canal snapshots", value=snapshot_channel.mention if snapshot_channel else "No configurado", inline=False)
+        embed.add_field(name="Canal desafíos",  value=challenge_channel.mention if challenge_channel else "No configurado", inline=False)
         embed.add_field(name="Rol Admin",       value=admin_role.mention  if admin_role  else "No configurado", inline=True)
         embed.add_field(name="Rol Player",      value=player_role.mention if player_role else "No configurado", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)

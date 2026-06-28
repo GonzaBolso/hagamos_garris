@@ -6,6 +6,17 @@ CREATE TABLE IF NOT EXISTS linked_players (
     linked_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ── Jugadores conocidos (steam_id + nombre más reciente) ──────
+-- Se llena/actualiza automáticamente cada vez que el collector procesa
+-- una partida. Se usa para el autocompletado por nombre en
+-- /hlladmin desafio crear (parámetro jugador_victima).
+CREATE TABLE IF NOT EXISTS players (
+    steam_id     VARCHAR(64) PRIMARY KEY,
+    player_name  VARCHAR(100)
+);
+
+CREATE INDEX IF NOT EXISTS idx_players_name ON players (player_name);
+
 -- ── Partidas procesadas por el collector ──────────────────────
 CREATE TABLE IF NOT EXISTS matches (
     match_id        VARCHAR(64) PRIMARY KEY,   -- ID único que da CRCON
@@ -37,6 +48,27 @@ CREATE TABLE IF NOT EXISTS match_player_stats (
 CREATE INDEX IF NOT EXISTS idx_mps_steam ON match_player_stats (steam_id);
 CREATE INDEX IF NOT EXISTS idx_mps_match ON match_player_stats (match_id);
 
+-- ── Kills individuales con arma (un kill por fila) ────────────
+-- Se llena cuando el collector cierra cada partida, consultando
+-- get_historical_logs acotado al rango de esa partida. Excluye TEAM
+-- KILL. Se usa para desafíos tipo 'kills_weapon'/'kills_player' y para
+-- el Top de armas en /stats show.
+CREATE TABLE IF NOT EXISTS kill_events (
+    id          SERIAL PRIMARY KEY,
+    match_id    VARCHAR(64) REFERENCES matches(match_id) ON DELETE CASCADE,
+    event_time  TIMESTAMPTZ,
+    killer_id   VARCHAR(64) NOT NULL,
+    killer_name VARCHAR(100),
+    victim_id   VARCHAR(64) NOT NULL,
+    victim_name VARCHAR(100),
+    weapon      VARCHAR(150)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kill_events_match ON kill_events (match_id);
+CREATE INDEX IF NOT EXISTS idx_kill_events_killer ON kill_events (killer_id);
+CREATE INDEX IF NOT EXISTS idx_kill_events_killer_weapon ON kill_events (killer_id, weapon);
+CREATE INDEX IF NOT EXISTS idx_kill_events_killer_victim ON kill_events (killer_id, victim_id);
+
 -- ── Vista: stats acumulados por jugador (para /hll top) ───────
 CREATE OR REPLACE VIEW player_totals AS
 SELECT
@@ -59,14 +91,16 @@ GROUP BY steam_id;
 
 -- ── Configuración del servidor de Discord ─────────────────────
 CREATE TABLE IF NOT EXISTS guild_config (
-    guild_id            BIGINT PRIMARY KEY,
-    stats_channel_id    BIGINT,
-    log_channel_id      BIGINT,
-    admin_role_id       BIGINT,
-    mod_role_id         BIGINT,
-    language            VARCHAR(5) DEFAULT 'es',
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ DEFAULT NOW()
+    guild_id                BIGINT PRIMARY KEY,
+    stats_channel_id        BIGINT,             -- canal donde los jugadores usan comandos
+    snapshot_channel_id     BIGINT,             -- canal de los Top diarios/semanales/mensuales automáticos
+    challenge_channel_id    BIGINT,             -- canal donde se manda la foto final al cerrar un desafío
+    log_channel_id          BIGINT,
+    admin_role_id           BIGINT,
+    mod_role_id             BIGINT,
+    language                VARCHAR(5) DEFAULT 'es',
+    created_at              TIMESTAMPTZ DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ── Sistema de desafíos con múltiples métricas (AND) ──────────
@@ -77,18 +111,23 @@ DROP TABLE IF EXISTS challenge_metrics CASCADE;
 DROP TABLE IF EXISTS challenges CASCADE;
 
 CREATE TABLE challenges (
-    id              SERIAL PRIMARY KEY,
-    guild_id        BIGINT NOT NULL,
-    name            VARCHAR(150) NOT NULL,
-    description     VARCHAR(500),
-    period          VARCHAR(15) NOT NULL,   -- 'daily' | 'weekly' | 'custom' | 'current_match' | 'next_match'
-    start_date      TIMESTAMPTZ,            -- NULL hasta que arranque (next_match)
-    end_date        TIMESTAMPTZ,            -- NULL hasta que se sepa (current/next_match)
-    match_id        VARCHAR(64),            -- partida asociada, solo para current_match/next_match
-    active          BOOLEAN DEFAULT TRUE,
-    notify_ingame   BOOLEAN DEFAULT FALSE,
-    created_by      BIGINT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    id                          SERIAL PRIMARY KEY,
+    guild_id                    BIGINT NOT NULL,
+    name                        VARCHAR(150) NOT NULL,
+    description                 VARCHAR(500),
+    period                      VARCHAR(15) NOT NULL,   -- 'custom' | 'current_match'
+    start_date                  TIMESTAMPTZ,            -- fecha de inicio (custom: al crearlo; current_match: cuando arrancó el mapa)
+    end_date                    TIMESTAMPTZ,            -- fecha de fin fija, solo para 'custom' (NULL en current_match)
+    match_id                    VARCHAR(64),            -- se completa cuando la partida de un current_match cierra
+    anchor_map_start            BIGINT,                 -- histórico/sin uso actual; se deja por compatibilidad con desafíos viejos
+    map_name                    VARCHAR(150),           -- nombre del mapa que sigue un current_match (ej: 'Utah Beach Warfare')
+    map_start                   BIGINT,                 -- timestamp epoch de inicio de ese mapa
+    active                      BOOLEAN DEFAULT TRUE,
+    notify_ingame               BOOLEAN DEFAULT FALSE,
+    pending_close_notification  BOOLEAN DEFAULT FALSE,  -- el collector la prende al cerrar; el bot la apaga tras notificar
+    closed_at                   TIMESTAMPTZ,            -- momento exacto del cierre (para descartar notificaciones tras 30 min sin canal configurado)
+    created_by                  BIGINT,
+    created_at                  TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_challenges_active ON challenges (guild_id, active);
@@ -97,8 +136,9 @@ CREATE INDEX idx_challenges_active ON challenges (guild_id, active);
 CREATE TABLE challenge_metrics (
     id              SERIAL PRIMARY KEY,
     challenge_id    INT REFERENCES challenges(id) ON DELETE CASCADE,
-    metric          VARCHAR(30) NOT NULL,   -- 'kills','kd_ratio','matches','combat','offense','defense','support'
-    target          NUMERIC NOT NULL
+    metric          VARCHAR(30) NOT NULL,   -- 'kills','kd_ratio','matches','combat','offense','defense','support','kills_weapon','kills_player'
+    target          NUMERIC NOT NULL,
+    param           VARCHAR(150)            -- arma exacta (kills_weapon) o steam_id de víctima (kills_player); NULL para el resto
 );
 
 CREATE INDEX idx_metrics_challenge ON challenge_metrics (challenge_id);

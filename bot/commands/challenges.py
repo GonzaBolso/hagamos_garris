@@ -19,16 +19,84 @@ from leaderboards import TZ_UY
 
 
 METRIC_LABELS = {
-    "kills":    "💀 Kills",
-    "kd_ratio": "⚔️ K/D",
-    "matches":  "🎮 Partidas",
-    "combat":   "🔥 Combat",
-    "offense":  "⚔️ Offense",
-    "defense":  "🛡️ Defense",
-    "support":  "🤝 Support",
+    "kills":         "💀 Kills",
+    "kd_ratio":      "⚔️ K/D",
+    "matches":       "🎮 Partidas",
+    "combat":        "🔥 Combat",
+    "offense":       "⚔️ Offense",
+    "defense":       "🛡️ Defense",
+    "support":       "🤝 Support",
+    "kills_weapon":  "🔫 Kills con arma",
+    "kills_player":  "🎯 Kills a jugador",
 }
 
+METRIC_EMOJIS = {
+    "kills":         "💀",
+    "kd_ratio":      "⚔️",
+    "matches":       "🎮",
+    "combat":        "🔥",
+    "offense":       "⚔️",
+    "defense":       "🛡️",
+    "support":       "🤝",
+    "kills_weapon":  "🔫",
+    "kills_player":  "🎯",
+}
+
+# Métricas que necesitan un parámetro extra (arma exacta o steam_id de
+# víctima) además del target numérico. Formato: metrica:param:target
+PARAM_METRICS = {"kills_weapon", "kills_player"}
+
 VALID_METRICS = set(METRIC_LABELS.keys())
+
+# Lista de armas/categorías de kill de HLL, para el autocompletado del
+# parámetro 'arma'. Nombres exactos como aparecen en los logs de CRCON
+# (sensible a mayúsculas/símbolos, ej. el guión del arma británica es un
+# "en dash" –, no un guión normal).
+HLL_WEAPONS = [
+    # Submachine Guns
+    "M1A1 THOMPSON", "M3 GREASE GUN", "MP40", "PPSH 41", "PPSH 41 W/DRUM",
+    "Sten Gun Mk.II", "Sten Gun Mk.V", "Lanchester", "M1928A1 THOMPSON",
+    # Semi-Auto Rifles
+    "M1 GARAND", "M1 CARBINE", "GEWEHR 43", "SVT40",
+    # Bolt-Action Rifles
+    "KARABINER 98K", "MOSIN NAGANT 1891", "MOSIN NAGANT 91/30", "MOSIN NAGANT M38",
+    "SMLE No.1 Mk III", "Rifle No.4 Mk I", "Rifle No.5 Mk I",
+    # Assault Rifles
+    "M1918A2 BAR", "STG44", "FG42", "Bren Gun",
+    # Shotguns
+    "M97 TRENCH GUN",
+    # Machine Guns
+    "BROWNING M1919", "MG34", "MG42", "DP-27", "Lewis Gun",
+    # Sniper Rifles
+    "M1903 SPRINGFIELD", "KARABINER 98K x8", "FG42 x4",
+    "SCOPED MOSIN NAGANT 91/30", "SCOPED SVT40",
+    "Lee-Enfield Pattern 1914 Sniper", "Rifle No.4 Mk I Sniper",
+    # Pistols
+    "COLT M1911", "WALTHER P38", "LUGER P08", "NAGANT M1895", "TOKAREV TT33", "Webley MK VI",
+    # Flamethrowers
+    "M2 FLAMETHROWER", "FLAMMENWERFER 41", "FLAMETHROWER",
+    # Melee
+    "M3 KNIFE", "FELDSPATEN", "MPL-50 SPADE", "Fairbairn–Sykes",
+    # Grenades
+    "MK2 GRENADE", "M24 STIELHANDGRANATE", "M43 STIELHANDGRANATE",
+    "RG-42 GRENADE", "MOLOTOV", "Mills Bomb", "No.82 Grenade",
+    # Satchel Charges
+    "SATCHEL", "SATCHEL CHARGE",
+    # Anti-Personnel Mines
+    "M2 AP MINE", "S-MINE", "POMZ AP MINE", "A.P. Shrapnel Mine Mk II",
+    # Anti-Tank Mines
+    "M1A1 AT MINE", "TELLERMINE 43", "TM-35 AT MINE", "A.T. Mine G.S. Mk V",
+    # Anti-Tank Rifles / Rocket Launchers
+    "BAZOOKA", "PANZERSCHRECK", "PTRS-41", "PIAT", "Boys Anti-tank Rifle",
+    # Flare Guns
+    "FLARE GUN", "No.2 Mk 5 Flare Pistol",
+    # Artillery / AT Guns
+    "155MM HOWITZER [M114]", "150MM HOWITZER [sFH 18]", "122MM HOWITZER [M1938 (M-30)]",
+    "QF 25-POUNDER [QF 25-Pounder]", "57MM CANNON [M1 57mm]", "75MM CANNON [PAK 40]",
+    "57MM CANNON [ZiS-2]", "QF 6-POUNDER [QF 6-Pounder]",
+    # Commander Abilities
+    "BOMBING RUN", "STRAFING RUN", "PRECISION STRIKE",
+]
 
 PERIOD_LABELS = {
     "custom":        "Personalizado",
@@ -38,7 +106,13 @@ PERIOD_LABELS = {
 
 def parse_metrics(metricas_str: str):
     """
-    Parsea un string tipo 'kills:20,kd_ratio:2' en una lista de (metric, target).
+    Parsea un string de métricas separadas por coma. Dos formatos:
+      - 'metrica:target'           (ej: kills:20, kd_ratio:2)
+      - 'metrica:param:target'     (ej: kills_weapon:BAZOOKA:10,
+                                          kills_player:76561198XXXXXXXXX:5)
+    El segundo formato es obligatorio para kills_weapon/kills_player
+    (PARAM_METRICS), y no se acepta para el resto.
+    Devuelve una lista de (metric, param_or_None, target).
     Lanza ValueError si el formato es inválido.
     """
     pairs = []
@@ -46,33 +120,80 @@ def parse_metrics(metricas_str: str):
         chunk = chunk.strip()
         if not chunk:
             continue
-        match = re.match(r"^([a-z_]+)\s*:\s*([\d.]+)$", chunk)
-        if not match:
-            raise ValueError(f"Formato inválido en '{chunk}'. Usá metrica:valor (ej: kills:20)")
-        metric, target = match.group(1), float(match.group(2))
+
+        parts = chunk.split(":")
+
+        if len(parts) == 2:
+            metric, target_str = parts[0].strip(), parts[1].strip()
+            param = None
+        elif len(parts) == 3:
+            metric, param, target_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        else:
+            raise ValueError(
+                f"Formato inválido en '{chunk}'. Usá metrica:valor "
+                f"(ej: kills:20) o metrica:parametro:valor (ej: kills_weapon:BAZOOKA:10)"
+            )
+
         if metric not in VALID_METRICS:
             opciones = ", ".join(VALID_METRICS)
             raise ValueError(f"Métrica desconocida '{metric}'. Opciones válidas: {opciones}")
-        pairs.append((metric, target))
+
+        if metric in PARAM_METRICS and not param:
+            raise ValueError(
+                f"'{metric}' necesita un parámetro (arma o steam_id). "
+                f"Formato: {metric}:parametro:valor"
+            )
+        if metric not in PARAM_METRICS and param is not None:
+            raise ValueError(f"'{metric}' no acepta parámetro extra. Formato: {metric}:valor")
+
+        if not re.match(r"^[\d.]+$", target_str):
+            raise ValueError(f"Formato inválido en '{chunk}': el valor objetivo debe ser numérico")
+
+        pairs.append((metric, param, float(target_str)))
+
     if not pairs:
         raise ValueError("Tenés que especificar al menos una métrica.")
     return pairs
 
 
-def format_metrics_line(metrics: list) -> str:
+async def format_metrics_line(pool, metrics: list) -> str:
     """
     metrics: lista de dicts o asyncpg.Record, cada uno con las claves
-    'metric' y 'target'. Ambos tipos soportan acceso por nombre (m["metric"]),
-    así que accedemos siempre así — NO por índice posicional, porque un
-    asyncpg.Record con columnas extra (ej. SELECT id, metric, target) tiene
-    posiciones distintas a un dict armado a mano con solo esas dos claves.
+    'metric', 'target' y opcionalmente 'param'. Ambos tipos soportan
+    acceso por nombre (m["metric"]), así que accedemos siempre así — NO
+    por índice posicional, porque un asyncpg.Record con columnas extra
+    (ej. SELECT id, metric, target, param) tiene posiciones distintas a
+    un dict armado a mano con solo esas claves.
+
+    Para 'kills_player', el param es un steam_id — se resuelve a nombre
+    consultando la tabla players, en vez de mostrar el id crudo.
     """
+    # Steam IDs a resolver de una vez, para no consultar la base por cada uno
+    steam_ids_to_resolve = [
+        m["param"] for m in metrics if m["metric"] == "kills_player" and m["param"]
+    ]
+    names_by_steam_id = {}
+    if steam_ids_to_resolve:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT steam_id, player_name FROM players WHERE steam_id = ANY($1::varchar[])",
+                steam_ids_to_resolve
+            )
+        names_by_steam_id = {r["steam_id"]: r["player_name"] for r in rows}
+
     parts = []
     for m in metrics:
         metric = m["metric"]
         target = m["target"]
+        param = m["param"]
         label = METRIC_LABELS.get(metric, metric)
-        parts.append(f"{label} ≥ {float(target):g}")
+        if param and metric == "kills_player":
+            display_param = names_by_steam_id.get(param) or param
+            parts.append(f"{label} ({display_param}) ≥ {float(target):g}")
+        elif param:
+            parts.append(f"{label} ({param}) ≥ {float(target):g}")
+        else:
+            parts.append(f"{label} ≥ {float(target):g}")
     return " **Y** ".join(parts)
 
 
@@ -95,6 +216,93 @@ def format_vence(r) -> str:
     return PERIOD_LABELS.get(r["period"], r["period"])
 
 
+async def build_progress_embed(pool, challenge_id: int, guild_id: int):
+    """
+    Construye el embed de progreso de un desafío (mismo formato que usa
+    /hll desafio progreso). Devuelve (embed, challenge) o (None, None) si
+    el desafío no existe o todavía no hay progreso registrado.
+    Reusada también por la tarea de notificación de cierre (challenge_close_task).
+    """
+    async with pool.acquire() as conn:
+        challenge = await conn.fetchrow(
+            "SELECT * FROM challenges WHERE id = $1 AND guild_id = $2",
+            challenge_id, guild_id
+        )
+        if not challenge:
+            return None, None
+
+        metrics = await conn.fetch(
+            "SELECT id, metric, target, param FROM challenge_metrics WHERE challenge_id = $1",
+            challenge_id
+        )
+
+        overall = await conn.fetch(
+            """
+            SELECT steam_id, player_name, completed
+            FROM challenge_progress
+            WHERE challenge_id = $1
+            """,
+            challenge_id
+        )
+
+        per_metric = {}
+        for m in metrics:
+            rows = await conn.fetch(
+                """
+                SELECT steam_id, player_name, progress
+                FROM challenge_metric_progress
+                WHERE challenge_metric_id = $1
+                """,
+                m["id"]
+            )
+            per_metric[m["metric"]] = {r["steam_id"]: r["progress"] for r in rows}
+
+    metrics_line = await format_metrics_line(pool, metrics)
+
+    if not overall:
+        return None, challenge
+
+    metric_names = [mr["metric"] for mr in metrics]
+    total_metrics = len(metric_names)
+    min_ceros_para_ocultar = -(-total_metrics // 2)  # ceil(total / 2)
+    primary_metric = metric_names[0] if metric_names else None
+
+    visibles = []
+    for r in overall:
+        valores = [per_metric.get(m, {}).get(r["steam_id"], 0) or 0 for m in metric_names]
+        ceros = sum(1 for v in valores if v == 0)
+        if ceros >= min_ceros_para_ocultar:
+            continue
+        primary_value = per_metric.get(primary_metric, {}).get(r["steam_id"], 0) or 0
+        visibles.append((primary_value, r))
+
+    visibles.sort(key=lambda t: t[0], reverse=True)
+    visibles = visibles[:10]
+
+    if not visibles:
+        return None, challenge
+
+    lines = []
+    for i, (_, r) in enumerate(visibles):
+        check = " ✅" if r["completed"] else ""
+        valores_str = " ".join(
+            f"{METRIC_EMOJIS.get(m, '')}{per_metric.get(m, {}).get(r['steam_id'], 0):g}"
+            for m in metric_names
+        )
+        lines.append(f"`{i+1}.` **{r['player_name']}** {valores_str}{check}")
+
+    completed_count = sum(1 for r in overall if r["completed"])
+    vence_info = format_vence(challenge)
+
+    embed = discord.Embed(
+        title=f"🎯 #{challenge_id} — {challenge['name']}",
+        description=f"Condición: {metrics_line}\nPartida: {vence_info}\n\n" + "\n".join(lines),
+        color=0xF1C40F
+    )
+    embed.set_footer(text=f"{completed_count} jugador(es) completaron el desafío")
+    return embed, challenge
+
+
 def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Group, pool, crcon_client):
     sub = app_commands.Group(name="desafio", description="Desafíos automáticos de stats", parent=hll_group)
     admin_sub = app_commands.Group(name="desafio", description="Administración de desafíos", parent=admin_group)
@@ -108,20 +316,54 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             description=(
                 "\n".join(lines) +
                 "\n\n**Formato:** `metrica:objetivo` separadas por coma\n"
-                "Ejemplo: `kills:20,kd_ratio:2` (debe cumplir ambas)"
+                "Ejemplo: `kills:20,kd_ratio:2` (debe cumplir ambas)\n\n"
+                "**Con parámetro** (kills_weapon, kills_player): `metrica:parametro:objetivo`\n"
+                "Ejemplo: `kills_weapon:BAZOOKA:10` (10 kills con BAZOOKA, nombre exacto del arma)\n"
+                "Ejemplo: `kills_player:76561198XXXXXXXXX:5` (5 kills a ese steam_id)"
             ),
             color=0x5865F2
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # ── Autocompletado: arma (lista estática) ──────────────────
+    async def arma_autocomplete(interaction: discord.Interaction, current: str):
+        current_lower = current.lower()
+        matches = [w for w in HLL_WEAPONS if current_lower in w.lower()]
+        return [
+            app_commands.Choice(name=w, value=w)
+            for w in matches[:25]  # Discord permite máximo 25 opciones
+        ]
+
+    # ── Autocompletado: jugador víctima (busca en la tabla players) ──
+    async def jugador_victima_autocomplete(interaction: discord.Interaction, current: str):
+        if not current:
+            return []
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT steam_id, player_name FROM players
+                WHERE player_name ILIKE $1
+                ORDER BY player_name
+                LIMIT 25
+                """,
+                f"%{current}%"
+            )
+        return [
+            app_commands.Choice(name=r["player_name"] or r["steam_id"], value=r["steam_id"])
+            for r in rows
+        ]
+
     # ── /hlladmin desafio crear ───────────────────────────────
     @admin_sub.command(name="crear", description="Crea un desafío configurable")
     @app_commands.describe(
         nombre="Nombre del desafío (ej: 'Cazador de la semana')",
-        metricas="kills, kd_ratio, matches, combat, offense, defense, support — ej: 'kills:20,kd_ratio:2'",
+        metricas="kills, kd_ratio, matches, combat, offense, defense, support, kills_weapon, kills_player — ej: 'kills:20' o 'kills_weapon:$ARMA:10'",
         periodo="Duración del desafío",
-        fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)"
+        fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)",
+        arma="Arma exacta para usar como $ARMA en metricas (ej: kills_weapon:$ARMA:10)",
+        jugador_victima="Jugador para usar como $JUGADOR en metricas (ej: kills_player:$JUGADOR:5)"
     )
+    @app_commands.autocomplete(arma=arma_autocomplete, jugador_victima=jugador_victima_autocomplete)
     @app_commands.choices(
         periodo=[
             app_commands.Choice(name="Personalizado",     value="custom"),
@@ -133,8 +375,29 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     nombre: str,
                     metricas: str,
                     periodo: app_commands.Choice[str],
-                    fecha_fin: str = None):
+                    fecha_fin: str = None,
+                    arma: str = None,
+                    jugador_victima: str = None):
         await interaction.response.defer(ephemeral=True)
+
+        # Reemplaza los placeholders $ARMA / $JUGADOR dentro de metricas
+        # por los valores elegidos vía autocompletado, antes de parsear.
+        if "$ARMA" in metricas:
+            if not arma:
+                await interaction.followup.send(
+                    "❌ Usaste `$ARMA` en `metricas` pero no elegiste el parámetro `arma`.",
+                    ephemeral=True
+                )
+                return
+            metricas = metricas.replace("$ARMA", arma)
+        if "$JUGADOR" in metricas:
+            if not jugador_victima:
+                await interaction.followup.send(
+                    "❌ Usaste `$JUGADOR` en `metricas` pero no elegiste el parámetro `jugador_victima`.",
+                    ephemeral=True
+                )
+                return
+            metricas = metricas.replace("$JUGADOR", jugador_victima)
 
         try:
             parsed_metrics = parse_metrics(metricas)
@@ -229,14 +492,14 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     )
                 challenge_id = row["id"]
 
-                for metric, target in parsed_metrics:
+                for metric, param, target in parsed_metrics:
                     await conn.execute(
-                        "INSERT INTO challenge_metrics (challenge_id, metric, target) VALUES ($1, $2, $3)",
-                        challenge_id, metric, target
+                        "INSERT INTO challenge_metrics (challenge_id, metric, target, param) VALUES ($1, $2, $3, $4)",
+                        challenge_id, metric, target, param
                     )
 
-        metrics_line = format_metrics_line(
-            [{"metric": m, "target": t} for m, t in parsed_metrics]
+        metrics_line = await format_metrics_line(
+            pool, [{"metric": m, "param": p, "target": t} for m, p, t in parsed_metrics]
         )
 
         if periodo.value == "current_match":
@@ -275,10 +538,10 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             embed = discord.Embed(title="🎯 Desafíos Activos", color=0x5865F2)
             for r in rows:
                 metrics = await conn.fetch(
-                    "SELECT metric, target FROM challenge_metrics WHERE challenge_id = $1",
+                    "SELECT metric, target, param FROM challenge_metrics WHERE challenge_id = $1",
                     r["id"]
                 )
-                metrics_line = format_metrics_line(metrics)
+                metrics_line = await format_metrics_line(pool, metrics)
                 vence = format_vence(r)
                 embed.add_field(
                     name=f"#{r['id']} — {r['name']}",
@@ -295,69 +558,18 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
     async def progreso(interaction: discord.Interaction, id: int):
         await interaction.response.defer()
 
-        async with pool.acquire() as conn:
-            challenge = await conn.fetchrow(
-                "SELECT * FROM challenges WHERE id = $1 AND guild_id = $2",
-                id, interaction.guild_id
-            )
-            if not challenge:
-                await interaction.followup.send("❌ No existe ese desafío.")
-                return
+        embed, challenge = await build_progress_embed(pool, id, interaction.guild_id)
 
-            metrics = await conn.fetch(
-                "SELECT id, metric, target FROM challenge_metrics WHERE challenge_id = $1",
-                id
-            )
+        if challenge is None:
+            await interaction.followup.send("❌ No existe ese desafío.")
+            return
 
-            # Progreso consolidado (completed = TRUE solo si TODAS las métricas lo están)
-            overall = await conn.fetch(
-                """
-                SELECT player_name, completed
-                FROM challenge_progress
-                WHERE challenge_id = $1
-                ORDER BY completed DESC, player_name ASC
-                LIMIT 15
-                """,
-                id
-            )
-
-            # Progreso detallado por métrica, para mostrar números reales
-            per_metric = {}
-            for m in metrics:
-                rows = await conn.fetch(
-                    """
-                    SELECT steam_id, player_name, progress
-                    FROM challenge_metric_progress
-                    WHERE challenge_metric_id = $1
-                    """,
-                    m["id"]
-                )
-                per_metric[m["metric"]] = {r["steam_id"]: r["progress"] for r in rows}
-
-        metrics_line = format_metrics_line(metrics)
-
-        if not overall:
+        if embed is None:
             await interaction.followup.send(
-                f"📭 Todavía no hay progreso registrado para **{challenge['name']}**."
+                f"📭 Todavía no hay progreso significativo registrado para **{challenge['name']}**."
             )
             return
 
-        medals = ["🥇", "🥈", "🥉"]
-        lines = []
-        for i, r in enumerate(overall):
-            medal = medals[i] if i < 3 else f"`{i+1}.`"
-            check = " ✅" if r["completed"] else ""
-            lines.append(f"{medal} **{r['player_name']}**{check}")
-
-        completed_count = sum(1 for r in overall if r["completed"])
-        vence_info = format_vence(challenge)
-
-        embed = discord.Embed(
-            title=f"🎯 #{id} — {challenge['name']}",
-            description=f"Condición: {metrics_line}\nPartida: {vence_info}\n\n" + "\n".join(lines),
-            color=0xF1C40F
-        )
-        embed.set_footer(text=f"{completed_count} jugador(es) completaron el desafío")
         await interaction.followup.send(embed=embed)
 
     # ── /hlladmin desafio eliminar ────────────────────────────

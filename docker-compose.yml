@@ -27,7 +27,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      CRCON_URL: ${CRCON_PUBLIC_URL}       # 7010 sin auth
+      CRCON_URL: ${CRCON_URL}              # 8010 con auth (necesario para get_historical_logs)
+      CRCON_API_KEY: ${CRCON_API_KEY}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB}

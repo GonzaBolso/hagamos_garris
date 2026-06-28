@@ -32,3 +32,6 @@
 | `/hll desafio listar`        | Listar Desafio                                |
 | `/hll desafio progreso <id>` | Progreso del desafio                          |
 
+/hlladmin desafio crear nombre:Bazuquero metricas:kills_weapon:$ARMA:10 periodo:Partida actual arma:[autocompletado, tipeá "baz" y elegí BAZOOKA]
+
+/hlladmin desafio crear nombre:Cacería metricas:kills_player:$JUGADOR:5 periodo:Personalizado fecha_fin:01/07/2026 22:00:00 jugador_victima:[autocompletado, tipeá el nombre y elegí]
