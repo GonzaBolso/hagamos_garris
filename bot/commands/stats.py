@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from checks import player_or_admin
 from timeutils import format_local
-from leaderboards import get_player_ranks
+from leaderboards import get_player_ranks, get_all_weapons_with_rank
 
 
 async def get_top_weapons(pool, steam_id: str, limit: int = 3) -> list:
@@ -155,6 +155,59 @@ def setup_stats(bot: commands.Bot, pool):
                 inline=False
             )
 
+        await interaction.followup.send(embed=embed)
+
+    # ── /stats weapon ─────────────────────────────────────────
+    @group.command(name="weapon", description="Todas tus armas con kills y tu ranking en cada una")
+    @player_or_admin()
+    async def weapon(interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        async with pool.acquire() as conn:
+            link = await conn.fetchrow(
+                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
+            )
+        if not link:
+            await interaction.followup.send(
+                "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
+            )
+            return
+
+        weapons = await get_all_weapons_with_rank(pool, link["steam_id"])
+
+        if not weapons:
+            await interaction.followup.send(
+                "No tenés kills registrados con ninguna arma todavía."
+            )
+            return
+
+        lines = [
+            f"`{w['weapon']}` — **{w['kills']}** kills · #{w['rank']} de {w['total_players']}"
+            for w in weapons
+        ]
+
+        # Salvaguarda: el límite de Discord para 'description' es 4096
+        # caracteres. Si un jugador usó MUCHAS armas distintas con
+        # nombres largos, recortamos antes de pasarnos, avisando cuántas
+        # quedaron afuera en vez de que el mensaje falle al enviarse.
+        description = "\n".join(lines)
+        if len(description) > 4000:
+            shown = []
+            total_len = 0
+            for line in lines:
+                if total_len + len(line) + 1 > 3950:
+                    break
+                shown.append(line)
+                total_len += len(line) + 1
+            faltantes = len(lines) - len(shown)
+            description = "\n".join(shown) + f"\n\n_... y {faltantes} arma(s) más_"
+
+        embed = discord.Embed(
+            title="🔫 Tus armas",
+            description=description,
+            color=0x5865F2
+        )
+        embed.set_footer(text=f"{len(weapons)} arma(s) distintas usadas")
         await interaction.followup.send(embed=embed)
 
     bot.tree.add_command(group)

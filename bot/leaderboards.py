@@ -109,6 +109,44 @@ async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
     ]
 
 
+async def get_all_weapons_with_rank(pool, steam_id: str) -> list:
+    """
+    Devuelve TODAS las armas con las que el jugador tiene al menos un
+    kill, con su rank (posición) entre todos los jugadores que usaron
+    esa arma. Usa una sola query con RANK() OVER (PARTITION BY weapon),
+    en vez de una consulta separada por arma.
+    Lista de dicts {weapon, kills, rank, total_players}, ordenada por
+    kills descendente.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH kills_per_player_weapon AS (
+                SELECT killer_id, weapon, COUNT(*) AS kills
+                FROM kill_events
+                WHERE weapon IS NOT NULL
+                GROUP BY killer_id, weapon
+            ),
+            ranked AS (
+                SELECT killer_id, weapon, kills,
+                       RANK() OVER (PARTITION BY weapon ORDER BY kills DESC) AS rank,
+                       COUNT(*) OVER (PARTITION BY weapon) AS total_players
+                FROM kills_per_player_weapon
+            )
+            SELECT weapon, kills, rank, total_players
+            FROM ranked
+            WHERE killer_id = $1
+            ORDER BY kills DESC
+            """,
+            steam_id
+        )
+    return [
+        {"weapon": r["weapon"], "kills": r["kills"],
+         "rank": r["rank"], "total_players": r["total_players"]}
+        for r in rows
+    ]
+
+
 async def get_player_ranks(pool, steam_id: str) -> dict:
     """
     Calcula la posición (rank) del jugador en cada categoría de
