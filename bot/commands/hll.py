@@ -377,7 +377,6 @@ def setup_hll(bot: commands.Bot, pool):
     @app_commands.choices(
         categoria=[
             app_commands.Choice(name="Kills",    value="total_kills"),
-            app_commands.Choice(name="K/D",      value="kd_ratio"),
             app_commands.Choice(name="Partidas", value="matches_played"),
             app_commands.Choice(name="Combat",   value="total_combat"),
             app_commands.Choice(name="Offense",  value="total_offense"),

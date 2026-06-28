@@ -11,7 +11,7 @@ import discord
 TZ_UY = timezone(timedelta(hours=-3))
 
 # Categorías disponibles. El orden de esta lista define el orden en que
-# se mandan los embeds en el snapshot automático.
+# se calculan los ranks individuales en /stats show (incluye K/D).
 CATEGORIES = [
     # (choice_name, column,           color,     icon, value_label)
     ("Kills",    "total_kills",    0xED4245, "💀", "Kills"),
@@ -24,6 +24,13 @@ CATEGORIES = [
 ]
 
 CATEGORY_BY_COLUMN = {col: (name, color, icon, value_label) for name, col, color, icon, value_label in CATEGORIES}
+
+# Categorías para /hll top y los snapshots diarios/semanales/mensuales —
+# sin K/D, porque con pocas partidas (o pocas deaths) el ratio se infla
+# de forma poco representativa y no sirve como ranking confiable del
+# servidor. El rank individual de K/D en /stats show sí se mantiene
+# (ahí no compite por el "mejor del server", solo informa tu posición).
+SNAPSHOT_CATEGORIES = [c for c in CATEGORIES if c[1] != "kd_ratio"]
 
 # Lista de armas/categorías de kill de HLL, para autocompletado del
 # parámetro 'arma' (en /hlladmin desafio crear y /hll weapon). Nombres
@@ -359,13 +366,13 @@ async def build_all_category_embeds(pool, period_value: str, limit: int, now_uy:
                                       include_links: bool = True, reference_date: datetime = None):
     """
     Corre fetch_leaderboard + build_leaderboard_embed para TODAS las categorías
-    definidas en CATEGORIES, en orden. Devuelve una lista de embeds (omite
-    categorías sin datos en ese período).
+    definidas en SNAPSHOT_CATEGORIES (sin K/D), en orden. Devuelve una lista
+    de embeds (omite categorías sin datos en ese período).
     include_links=False se usa para el snapshot automático (ver build_leaderboard_embed).
     reference_date: ver fetch_leaderboard / build_leaderboard_embed.
     """
     embeds = []
-    for name, col, *_ in CATEGORIES:
+    for name, col, *_ in SNAPSHOT_CATEGORIES:
         rows = await fetch_leaderboard(pool, col, period_value, limit, reference_date)
         if not rows:
             continue
