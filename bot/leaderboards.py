@@ -215,7 +215,7 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int,
             return await conn.fetch(
                 f"""
                 SELECT steam_id, last_name, {col}, matches_played,
-                       total_kills, total_deaths, kd_ratio
+                       total_kills, total_deaths, kd_ratio, total_time_seconds
                 FROM player_totals
                 ORDER BY {col} DESC NULLS LAST
                 LIMIT $1
@@ -247,7 +247,8 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int,
                 SUM(mps.combat_score)                               AS total_combat,
                 SUM(mps.offense_score)                              AS total_offense,
                 SUM(mps.defense_score)                              AS total_defense,
-                SUM(mps.support_score)                              AS total_support
+                SUM(mps.support_score)                              AS total_support,
+                SUM(mps.time_seconds)                                AS total_time_seconds
             FROM match_player_stats mps
             JOIN matches m ON m.match_id = mps.match_id
             WHERE m.start_time >= $2 AND m.start_time < $3
@@ -275,7 +276,35 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
     _, color, icon, value_label = CATEGORY_BY_COLUMN.get(col, (categoria_name, 0xF1C40F, "🏆", categoria_name))
     period_label = PERIOD_LABELS.get(period_value, "Histórico")
 
-    header = f"`#   Jugador               {value_label:<8} Partidas  KD`\n" + "─" * 46
+    # Qué dato(s) extra mostrar al lado del valor principal, por columna.
+    # Cada entrada: (etiqueta_header, función que devuelve el texto de la línea)
+    def fmt_partidas(r):
+        return f"{r['matches_played']} partidas"
+
+    def fmt_kd(r):
+        kd_val = r["kd_ratio"]
+        return f"KD {kd_val:.2f}" if kd_val is not None else "KD —"
+
+    def fmt_deaths(r):
+        return f"{r['total_deaths']} deaths"
+
+    def fmt_horas(r):
+        horas = round((r["total_time_seconds"] or 0) / 3600, 1)
+        return f"{horas}h"
+
+    EXTRAS_BY_COLUMN = {
+        "total_kills":    [("Partidas", fmt_partidas), ("Deaths", fmt_deaths)],
+        "kd_ratio":       [("Partidas", fmt_partidas)],
+        "matches_played": [("Horas", fmt_horas)],
+        "total_combat":   [("Partidas", fmt_partidas)],
+        "total_offense":  [("Partidas", fmt_partidas)],
+        "total_defense":  [("Partidas", fmt_partidas)],
+        "total_support":  [("Partidas", fmt_partidas)],
+    }
+    extras_def = EXTRAS_BY_COLUMN.get(col, [("Partidas", fmt_partidas), ("KD", fmt_kd)])
+
+    extra_header = "".join(f" {label} " for label, _ in extras_def)
+    header = f"`#   Jugador               {value_label:<8}{extra_header}`\n" + "─" * 46
     lines = [header]
 
     for i, r in enumerate(rows):
@@ -292,12 +321,11 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
         value = r[col]
         value_str = f"{value:.2f}" if isinstance(value, float) else str(value)
 
-        kd_val = r["kd_ratio"]
-        kd_str = f"{kd_val:.2f}" if kd_val is not None else "—"
+        extras = [fn(r) for _, fn in extras_def]
+        extra_str = (" · " + " · ".join(extras)) if extras else ""
 
         lines.append(
-            f"`{rank}` {name_display} — **{value_str}** "
-            f"· {r['matches_played']} partidas · KD {kd_str}"
+            f"`{rank}` {name_display} — **{value_str}**{extra_str}"
         )
 
     embed = discord.Embed(
