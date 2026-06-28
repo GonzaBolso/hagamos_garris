@@ -11,7 +11,7 @@ from timeutils import format_local
 from leaderboards import get_player_ranks, get_all_weapons_with_rank
 
 
-async def get_top_weapons(pool, steam_id: str, limit: int = 3) -> list:
+async def get_top_weapons(pool, steam_id: str, limit: int = 5) -> list:
     """
     Devuelve las armas con más kills del jugador, ordenadas de mayor a
     menor. Lista de dicts {weapon, kills}.
@@ -62,7 +62,7 @@ def setup_stats(bot: commands.Bot, pool):
 
         total_h = round((row["total_time_seconds"] or 0) / 3600, 1)
         ranks = await get_player_ranks(pool, link["steam_id"])
-        top_weapons = await get_top_weapons(pool, link["steam_id"], limit=3)
+        top_weapons = await get_top_weapons(pool, link["steam_id"], limit=5)
 
         def rank_suffix(col: str) -> str:
             r = ranks.get(col)

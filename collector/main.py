@@ -179,6 +179,7 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
             result       = m.get("result") or {}
             allied_score = result.get("allied")
             axis_score   = result.get("axis")
+            match_start  = parse_dt(m.get("start"))
 
             # Insertar la partida
             await conn.execute(
@@ -189,7 +190,7 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                 """,
                 match_id,
                 map_name,
-                parse_dt(m.get("start")),
+                match_start,
                 parse_dt(m.get("end")),
                 allied_score,
                 axis_score,
@@ -235,14 +236,21 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                 )
 
                 # Mantiene actualizada la lista de jugadores conocidos
-                # (usada para el autocompletado por nombre en desafíos).
+                # (usada para el autocompletado por nombre en desafíos y
+                # para /hll registro). Solo actualiza el nombre si esta
+                # partida es MÁS RECIENTE que la última registrada — así
+                # no importa en qué orden el collector procese las
+                # partidas (relevante sobre todo durante un backfill).
                 await conn.execute(
                     """
-                    INSERT INTO players (steam_id, player_name)
-                    VALUES ($1, $2)
-                    ON CONFLICT (steam_id) DO UPDATE SET player_name = $2
+                    INSERT INTO players (steam_id, player_name, last_match_start)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (steam_id) DO UPDATE
+                        SET player_name = $2, last_match_start = $3
+                        WHERE players.last_match_start IS NULL
+                           OR $3 > players.last_match_start
                     """,
-                    steam_id, p.get("player", ""),
+                    steam_id, p.get("player", ""), match_start,
                 )
 
             player_count = len([p for p in players if int(p.get("time_seconds") or 0) > 0])

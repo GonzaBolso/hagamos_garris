@@ -11,8 +11,9 @@ CREATE TABLE IF NOT EXISTS linked_players (
 -- una partida. Se usa para el autocompletado por nombre en
 -- /hlladmin desafio crear (parámetro jugador_victima).
 CREATE TABLE IF NOT EXISTS players (
-    steam_id     VARCHAR(64) PRIMARY KEY,
-    player_name  VARCHAR(100)
+    steam_id          VARCHAR(64) PRIMARY KEY,
+    player_name       VARCHAR(100),
+    last_match_start  TIMESTAMPTZ  -- fecha de la partida más reciente que actualizó este nombre
 );
 
 CREATE INDEX IF NOT EXISTS idx_players_name ON players (player_name);
@@ -72,22 +73,23 @@ CREATE INDEX IF NOT EXISTS idx_kill_events_killer_victim ON kill_events (killer_
 -- ── Vista: stats acumulados por jugador (para /hll top) ───────
 CREATE OR REPLACE VIEW player_totals AS
 SELECT
-    steam_id,
-    MAX(player_name)                                AS last_name,
-    COUNT(DISTINCT match_id)                        AS matches_played,
-    SUM(kills)                                      AS total_kills,
-    SUM(deaths)                                     AS total_deaths,
-    CASE WHEN SUM(deaths) = 0
-         THEN SUM(kills)::FLOAT
-         ELSE ROUND((SUM(kills)::NUMERIC / SUM(deaths)), 2)
+    mps.steam_id,
+    COALESCE(p.player_name, MAX(mps.player_name))::TEXT   AS last_name,
+    COUNT(DISTINCT mps.match_id)                    AS matches_played,
+    SUM(mps.kills)                                  AS total_kills,
+    SUM(mps.deaths)                                 AS total_deaths,
+    CASE WHEN SUM(mps.deaths) = 0
+         THEN SUM(mps.kills)::FLOAT
+         ELSE ROUND((SUM(mps.kills)::NUMERIC / SUM(mps.deaths)), 2)
     END                                             AS kd_ratio,
-    SUM(combat_score)                               AS total_combat,
-    SUM(offense_score)                              AS total_offense,
-    SUM(defense_score)                              AS total_defense,
-    SUM(support_score)                              AS total_support,
-    SUM(time_seconds)                               AS total_time_seconds
-FROM match_player_stats
-GROUP BY steam_id;
+    SUM(mps.combat_score)                           AS total_combat,
+    SUM(mps.offense_score)                          AS total_offense,
+    SUM(mps.defense_score)                          AS total_defense,
+    SUM(mps.support_score)                          AS total_support,
+    SUM(mps.time_seconds)                           AS total_time_seconds
+FROM match_player_stats mps
+LEFT JOIN players p ON p.steam_id = mps.steam_id
+GROUP BY mps.steam_id, p.player_name;
 
 -- ── Configuración del servidor de Discord ─────────────────────
 CREATE TABLE IF NOT EXISTS guild_config (
