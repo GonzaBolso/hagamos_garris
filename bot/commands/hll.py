@@ -12,7 +12,7 @@ from api import crcon, CRCONError
 from checks import admin_only, player_or_admin
 from timeutils import parse_iso_to_local
 from leaderboards import (
-    TZ_UY, fetch_leaderboard, build_leaderboard_embed,
+    TZ_UY, fetch_leaderboard, build_leaderboard_embed, HLL_WEAPONS, get_top_killers_by_weapon,
 )
 from snapshot_task import run_snapshot_manual
 
@@ -412,6 +412,42 @@ def setup_hll(bot: commands.Bot, pool):
         embed = build_leaderboard_embed(rows, col, categoria.name, period_value, cantidad)
         await interaction.followup.send(embed=embed)
 
+    # ── Autocompletado: arma (lista estática, compartida con desafios) ──
+    async def weapon_arma_autocomplete(interaction: discord.Interaction, current: str):
+        current_lower = current.lower()
+        matches = [w for w in HLL_WEAPONS if current_lower in w.lower()]
+        return [
+            app_commands.Choice(name=w, value=w)
+            for w in matches[:25]
+        ]
+
+    # ── /hll weapon ───────────────────────────────────────────
+    @group.command(name="weapon", description="Top 10 de jugadores con más kills usando un arma específica")
+    @app_commands.describe(arma="Arma exacta (ej: BAZOOKA, MP40, M2 AP MINE)")
+    @app_commands.autocomplete(arma=weapon_arma_autocomplete)
+    @player_or_admin()
+    async def weapon(interaction: discord.Interaction, arma: str):
+        await interaction.response.defer()
+
+        rows = await get_top_killers_by_weapon(pool, arma, limit=10)
+
+        if not rows:
+            await interaction.followup.send(f"No hay kills registrados con **{arma}** todavía.")
+            return
+
+        lines = [
+            f"`{i+1}.` **{r['player_name'] or r['steam_id']}** — {r['kills']} kills"
+            for i, r in enumerate(rows)
+        ]
+
+        embed = discord.Embed(
+            title=f"🔫 Top 10 — {arma}",
+            description="\n".join(lines),
+            color=0xE67E22
+        )
+        embed.set_footer(text="📊 Stats históricos acumulados")
+        await interaction.followup.send(embed=embed)
+
     # ── /hlladmin snapshot ──────────────────────────────────────
     @admin_group.command(name="snapshot", description="Manda el resumen de Top 10 de un período (hoy, o una fecha puntual)")
     @app_commands.describe(
@@ -469,6 +505,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll online",              value="Jugadores conectados ahora mismo", inline=False)
         embed.add_field(name="/hll vip",                 value="Verificá si tenés VIP activo", inline=False)
         embed.add_field(name="/hll top <categoria> [periodo]", value="Ranking: Kills, K/D, Partidas, etc. Período: histórico/día/semana/mes", inline=False)
+        embed.add_field(name="/hll weapon <arma>", value="Top 10 de jugadores con más kills usando esa arma", inline=False)
         embed.add_field(name="/hll desafio listar",      value="Muestra los desafíos activos", inline=False)
         embed.add_field(name="/hll desafio progreso <id>", value="Ranking de progreso de un desafío", inline=False)
         embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)

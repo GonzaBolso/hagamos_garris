@@ -15,7 +15,7 @@ from discord import app_commands
 
 from checks import admin_only, player_or_admin
 from timeutils import format_local
-from leaderboards import TZ_UY
+from leaderboards import TZ_UY, HLL_WEAPONS
 
 
 METRIC_LABELS = {
@@ -47,56 +47,6 @@ METRIC_EMOJIS = {
 PARAM_METRICS = {"kills_weapon", "kills_player"}
 
 VALID_METRICS = set(METRIC_LABELS.keys())
-
-# Lista de armas/categorías de kill de HLL, para el autocompletado del
-# parámetro 'arma'. Nombres exactos como aparecen en los logs de CRCON
-# (sensible a mayúsculas/símbolos, ej. el guión del arma británica es un
-# "en dash" –, no un guión normal).
-HLL_WEAPONS = [
-    # Submachine Guns
-    "M1A1 THOMPSON", "M3 GREASE GUN", "MP40", "PPSH 41", "PPSH 41 W/DRUM",
-    "Sten Gun Mk.II", "Sten Gun Mk.V", "Lanchester", "M1928A1 THOMPSON",
-    # Semi-Auto Rifles
-    "M1 GARAND", "M1 CARBINE", "GEWEHR 43", "SVT40",
-    # Bolt-Action Rifles
-    "KARABINER 98K", "MOSIN NAGANT 1891", "MOSIN NAGANT 91/30", "MOSIN NAGANT M38",
-    "SMLE No.1 Mk III", "Rifle No.4 Mk I", "Rifle No.5 Mk I",
-    # Assault Rifles
-    "M1918A2 BAR", "STG44", "FG42", "Bren Gun",
-    # Shotguns
-    "M97 TRENCH GUN",
-    # Machine Guns
-    "BROWNING M1919", "MG34", "MG42", "DP-27", "Lewis Gun",
-    # Sniper Rifles
-    "M1903 SPRINGFIELD", "KARABINER 98K x8", "FG42 x4",
-    "SCOPED MOSIN NAGANT 91/30", "SCOPED SVT40",
-    "Lee-Enfield Pattern 1914 Sniper", "Rifle No.4 Mk I Sniper",
-    # Pistols
-    "COLT M1911", "WALTHER P38", "LUGER P08", "NAGANT M1895", "TOKAREV TT33", "Webley MK VI",
-    # Flamethrowers
-    "M2 FLAMETHROWER", "FLAMMENWERFER 41", "FLAMETHROWER",
-    # Melee
-    "M3 KNIFE", "FELDSPATEN", "MPL-50 SPADE", "Fairbairn–Sykes",
-    # Grenades
-    "MK2 GRENADE", "M24 STIELHANDGRANATE", "M43 STIELHANDGRANATE",
-    "RG-42 GRENADE", "MOLOTOV", "Mills Bomb", "No.82 Grenade",
-    # Satchel Charges
-    "SATCHEL", "SATCHEL CHARGE",
-    # Anti-Personnel Mines
-    "M2 AP MINE", "S-MINE", "POMZ AP MINE", "A.P. Shrapnel Mine Mk II",
-    # Anti-Tank Mines
-    "M1A1 AT MINE", "TELLERMINE 43", "TM-35 AT MINE", "A.T. Mine G.S. Mk V",
-    # Anti-Tank Rifles / Rocket Launchers
-    "BAZOOKA", "PANZERSCHRECK", "PTRS-41", "PIAT", "Boys Anti-tank Rifle",
-    # Flare Guns
-    "FLARE GUN", "No.2 Mk 5 Flare Pistol",
-    # Artillery / AT Guns
-    "155MM HOWITZER [M114]", "150MM HOWITZER [sFH 18]", "122MM HOWITZER [M1938 (M-30)]",
-    "QF 25-POUNDER [QF 25-Pounder]", "57MM CANNON [M1 57mm]", "75MM CANNON [PAK 40]",
-    "57MM CANNON [ZiS-2]", "QF 6-POUNDER [QF 6-Pounder]",
-    # Commander Abilities
-    "BOMBING RUN", "STRAFING RUN", "PRECISION STRIKE",
-]
 
 PERIOD_LABELS = {
     "custom":        "Personalizado",

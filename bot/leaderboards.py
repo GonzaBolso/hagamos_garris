@@ -25,6 +25,75 @@ CATEGORIES = [
 
 CATEGORY_BY_COLUMN = {col: (name, color, icon, value_label) for name, col, color, icon, value_label in CATEGORIES}
 
+# Lista de armas/categorías de kill de HLL, para autocompletado del
+# parámetro 'arma' (en /hlladmin desafio crear y /hll weapon). Nombres
+# exactos como aparecen en los logs de CRCON (sensible a mayúsculas).
+HLL_WEAPONS = [
+    # Submachine Guns
+    "M1A1 THOMPSON", "M3 GREASE GUN", "MP40", "PPSH 41", "PPSH 41 W/DRUM",
+    "Sten Gun Mk.II", "Sten Gun Mk.V", "Lanchester", "M1928A1 THOMPSON",
+    # Semi-Auto Rifles
+    "M1 GARAND", "M1 CARBINE", "GEWEHR 43", "SVT40",
+    # Bolt-Action Rifles
+    "KARABINER 98K", "MOSIN NAGANT 1891", "MOSIN NAGANT 91/30", "MOSIN NAGANT M38",
+    "SMLE No.1 Mk III", "Rifle No.4 Mk I", "Rifle No.5 Mk I",
+    # Assault Rifles
+    "M1918A2 BAR", "STG44", "FG42", "Bren Gun",
+    # Shotguns
+    "M97 TRENCH GUN",
+    # Machine Guns
+    "BROWNING M1919", "MG34", "MG42", "DP-27", "Lewis Gun",
+    # Sniper Rifles
+    "M1903 SPRINGFIELD", "KARABINER 98K x8", "FG42 x4",
+    "SCOPED MOSIN NAGANT 91/30", "SCOPED SVT40",
+    "Lee-Enfield Pattern 1914 Sniper", "Rifle No.4 Mk I Sniper",
+    # Pistols
+    "COLT M1911", "WALTHER P38", "LUGER P08", "NAGANT M1895", "TOKAREV TT33", "Webley MK VI",
+    # Flamethrowers
+    "M2 FLAMETHROWER", "FLAMMENWERFER 41", "FLAMETHROWER",
+    # Melee
+    "M3 KNIFE", "FELDSPATEN", "MPL-50 SPADE", "Fairbairn–Sykes",
+    # Grenades
+    "MK2 GRENADE", "M24 STIELHANDGRANATE", "M43 STIELHANDGRANATE",
+    "RG-42 GRENADE", "MOLOTOV", "Mills Bomb", "No.82 Grenade",
+    # Satchel Charges
+    "SATCHEL", "SATCHEL CHARGE",
+    # Anti-Personnel Mines
+    "M2 AP MINE", "S-MINE", "POMZ AP MINE", "A.P. Shrapnel Mine Mk II",
+    # Anti-Tank Mines
+    "M1A1 AT MINE", "TELLERMINE 43", "TM-35 AT MINE", "A.T. Mine G.S. Mk V",
+    # Anti-Tank Rifles / Rocket Launchers
+    "BAZOOKA", "PANZERSCHRECK", "PTRS-41", "PIAT", "Boys Anti-tank Rifle",
+    # Flare Guns
+    "FLARE GUN", "No.2 Mk 5 Flare Pistol",
+    # Artillery / AT Guns
+    "155MM HOWITZER [M114]", "150MM HOWITZER [sFH 18]", "122MM HOWITZER [M1938 (M-30)]",
+    "QF 25-POUNDER [QF 25-Pounder]", "57MM CANNON [M1 57mm]", "75MM CANNON [PAK 40]",
+    "57MM CANNON [ZiS-2]", "QF 6-POUNDER [QF 6-Pounder]",
+    # Commander Abilities
+    "BOMBING RUN", "STRAFING RUN", "PRECISION STRIKE",
+]
+
+
+async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
+    """
+    Devuelve el Top N de jugadores con más kills usando un arma exacta,
+    para /hll weapon. Lista de dicts {steam_id, player_name, kills}.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT killer_id AS steam_id, MAX(killer_name) AS player_name, COUNT(*) AS kills
+            FROM kill_events
+            WHERE weapon = $1
+            GROUP BY killer_id
+            ORDER BY kills DESC
+            LIMIT $2
+            """,
+            weapon, limit
+        )
+    return [{"steam_id": r["steam_id"], "player_name": r["player_name"], "kills": r["kills"]} for r in rows]
+
 
 async def get_player_ranks(pool, steam_id: str) -> dict:
     """
