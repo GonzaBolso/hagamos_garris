@@ -2,6 +2,7 @@
 commands/hll.py
 Grupo /hll con subcomandos: registro, help, server, online, top, vip, setchannel, setroles
 """
+import re
 from datetime import datetime, timezone, timedelta
 
 import discord
@@ -160,14 +161,31 @@ def setup_hll(bot: commands.Bot, pool):
     async def registro(interaction: discord.Interaction, steam_id: str):
         await interaction.response.defer(ephemeral=True)
 
-        if not steam_id.isdigit() or len(steam_id) != 17:
+        steam_id = steam_id.strip()
+        es_steam64 = bool(re.fullmatch(r"\d{17}", steam_id))
+        es_consola = bool(re.fullmatch(r"[0-9a-fA-F]{32}", steam_id))
+
+        if not (es_steam64 or es_consola):
             await interaction.followup.send(
-                "❌ Steam ID inválido. Debe tener 17 dígitos.\n"
-                "Encontralo en: https://steamid.io", ephemeral=True
+                "❌ ID inválido. Debe ser un Steam ID de 17 dígitos "
+                "(encontralo en https://steamid.io) o un ID de consola de 32 caracteres.",
+                ephemeral=True
             )
             return
 
         async with pool.acquire() as conn:
+            player = await conn.fetchrow(
+                "SELECT player_name FROM players WHERE steam_id = $1", steam_id
+            )
+            if not player:
+                await interaction.followup.send(
+                    "❌ Ese ID no aparece en nuestros registros — todavía no detectamos "
+                    "ninguna partida tuya en el servidor. Jugá al menos una partida y "
+                    "probá de nuevo en unos minutos.",
+                    ephemeral=True
+                )
+                return
+
             existing = await conn.fetchrow(
                 "SELECT discord_id FROM linked_players WHERE steam_id = $1", steam_id
             )
@@ -190,6 +208,7 @@ def setup_hll(bot: commands.Bot, pool):
         await interaction.followup.send(
             f"✅ Vinculado correctamente.\n"
             f"Discord: **{interaction.user}**\n"
+            f"Steam: **{player['player_name'] or '?'}**\n"
             f"Steam ID: `{steam_id}`", ephemeral=True
         )
 
