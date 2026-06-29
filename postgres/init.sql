@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     stats_channel_id        BIGINT,             -- canal donde los jugadores usan comandos
     snapshot_channel_id     BIGINT,             -- canal de los Top diarios/semanales/mensuales automáticos
     challenge_channel_id    BIGINT,             -- canal donde se manda la foto final al cerrar un desafío
+    vinculados_channel_id   BIGINT,             -- canal privado con la lista de vinculados Discord<->Steam
+    vinculados_message_id   BIGINT,             -- mensaje fijo que se edita con la lista, en ese canal
     log_channel_id          BIGINT,
     admin_role_id           BIGINT,
     mod_role_id             BIGINT,

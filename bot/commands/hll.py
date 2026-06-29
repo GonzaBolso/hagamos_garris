@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from api import crcon, CRCONError
 from checks import admin_only, player_or_admin
-from timeutils import parse_iso_to_local
+from timeutils import parse_iso_to_local, format_local
 from leaderboards import (
     TZ_UY, fetch_leaderboard, build_leaderboard_embed, HLL_WEAPONS, get_top_killers_by_weapon,
 )
@@ -48,6 +48,87 @@ def format_time_remaining(seconds) -> str:
     return f"{minutes}m"
 
 
+async def update_vinculados_message(bot, pool, guild_id: int):
+    """
+    Edita (o crea si no existe) el mensaje fijo con la lista de cuentas
+    vinculadas Discord<->Steam, en el canal configurado con
+    /hlladmin setchannel canal_vinculados:#canal. Se llama cada vez que
+    alguien usa /hll registro, y al configurar el canal por primera vez.
+    Ordenado por linked_at descendente (más reciente primero).
+    """
+    async with pool.acquire() as conn:
+        config = await conn.fetchrow(
+            "SELECT vinculados_channel_id, vinculados_message_id FROM guild_config WHERE guild_id = $1",
+            guild_id
+        )
+        if not config or not config["vinculados_channel_id"]:
+            return  # canal no configurado, nada que hacer
+
+        rows = await conn.fetch(
+            """
+            SELECT discord_id, discord_name, steam_id, linked_at
+            FROM linked_players
+            ORDER BY linked_at DESC
+            """
+        )
+
+    channel = bot.get_channel(config["vinculados_channel_id"])
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(config["vinculados_channel_id"])
+        except discord.HTTPException:
+            return
+
+    if rows:
+        lines = [
+            f"`{r['discord_name'] or '?'}` — `{r['steam_id']}` "
+            f"_(vinculado {format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
+            for r in rows
+        ]
+        description = "\n".join(lines)
+    else:
+        description = "_Todavía no hay nadie vinculado._"
+
+    # Discord limita 'description' a 4096 caracteres; con muchos vinculados
+    # esto podría no entrar — recortamos como salvaguarda, igual que
+    # hacemos en /stats weapon.
+    if len(description) > 4000:
+        shown = []
+        total_len = 0
+        for line in lines:
+            if total_len + len(line) + 1 > 3950:
+                break
+            shown.append(line)
+            total_len += len(line) + 1
+        faltantes = len(lines) - len(shown)
+        description = "\n".join(shown) + f"\n\n_... y {faltantes} más_"
+
+    embed = discord.Embed(
+        title="🔗 Cuentas vinculadas (Discord ↔ Steam)",
+        description=description,
+        color=0x5865F2
+    )
+    embed.set_footer(text=f"{len(rows)} cuenta(s) vinculada(s) • Ordenado por más reciente")
+
+    message_id = config["vinculados_message_id"]
+    if message_id:
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.edit(embed=embed)
+            return
+        except discord.NotFound:
+            pass  # el mensaje fue borrado a mano; mandamos uno nuevo abajo
+        except discord.HTTPException:
+            return
+
+    new_message = await channel.send(embed=embed)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_config SET vinculados_message_id = $1 WHERE guild_id = $2",
+            new_message.id, guild_id
+        )
+
+
 def setup_hll(bot: commands.Bot, pool):
     group = app_commands.Group(name="hll", description="Comandos de Hell Let Loose")
 
@@ -66,28 +147,32 @@ def setup_hll(bot: commands.Bot, pool):
     @app_commands.describe(
         canal="Canal donde los jugadores podrán usar los comandos",
         canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)",
-        canal_desafios="Canal donde se manda la foto final cuando se cierra un desafío (opcional)"
+        canal_desafios="Canal donde se manda la foto final cuando se cierra un desafío (opcional)",
+        canal_vinculados="Canal privado con la lista de cuentas vinculadas Discord<->Steam, actualizada sola (opcional)"
     )
     @admin_only()
     async def setchannel(interaction: discord.Interaction,
                           canal: discord.TextChannel,
                           canal_snapshots: discord.TextChannel = None,
-                          canal_desafios: discord.TextChannel = None):
+                          canal_desafios: discord.TextChannel = None,
+                          canal_vinculados: discord.TextChannel = None):
         snapshots_id = canal_snapshots.id if canal_snapshots is not None else None
         desafios_id = canal_desafios.id if canal_desafios is not None else None
+        vinculados_id = canal_vinculados.id if canal_vinculados is not None else None
 
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id, challenge_channel_id)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id, challenge_channel_id, vinculados_channel_id)
+                VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (guild_id) DO UPDATE
                     SET stats_channel_id = $2,
                         snapshot_channel_id = COALESCE($3, guild_config.snapshot_channel_id),
                         challenge_channel_id = COALESCE($4, guild_config.challenge_channel_id),
+                        vinculados_channel_id = COALESCE($5, guild_config.vinculados_channel_id),
                         updated_at = NOW()
                 """,
-                interaction.guild_id, canal.id, snapshots_id, desafios_id
+                interaction.guild_id, canal.id, snapshots_id, desafios_id, vinculados_id
             )
 
         msg = f"✅ Canal de jugadores configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí."
@@ -95,7 +180,14 @@ def setup_hll(bot: commands.Bot, pool):
             msg += f"\n✅ Canal de snapshots automáticos: {canal_snapshots.mention}"
         if canal_desafios is not None:
             msg += f"\n✅ Canal de cierre de desafíos: {canal_desafios.mention}"
+        if canal_vinculados is not None:
+            msg += f"\n✅ Canal de vinculados: {canal_vinculados.mention}"
         await interaction.response.send_message(msg, ephemeral=True)
+
+        # Al configurar (o reconfigurar) el canal de vinculados, refrescamos
+        # de una el mensaje fijo, así no queda vacío hasta el próximo /hll registro.
+        if canal_vinculados is not None:
+            await update_vinculados_message(interaction.client, pool, interaction.guild_id)
 
     # ── /hlladmin setroles ──────────────────────────────────────
     @admin_group.command(name="setroles", description="Configura los roles de admin y player")
@@ -143,6 +235,7 @@ def setup_hll(bot: commands.Bot, pool):
         channel = interaction.guild.get_channel(row["stats_channel_id"]) if row["stats_channel_id"] else None
         snapshot_channel = interaction.guild.get_channel(row["snapshot_channel_id"]) if row.get("snapshot_channel_id") else None
         challenge_channel = interaction.guild.get_channel(row["challenge_channel_id"]) if row.get("challenge_channel_id") else None
+        vinculados_channel = interaction.guild.get_channel(row["vinculados_channel_id"]) if row.get("vinculados_channel_id") else None
         admin_role  = interaction.guild.get_role(row["admin_role_id"])  if row["admin_role_id"]  else None
         player_role = interaction.guild.get_role(row["mod_role_id"])    if row["mod_role_id"]    else None
 
@@ -150,6 +243,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="Canal jugadores", value=channel.mention  if channel     else "No configurado", inline=False)
         embed.add_field(name="Canal snapshots", value=snapshot_channel.mention if snapshot_channel else "No configurado", inline=False)
         embed.add_field(name="Canal desafíos",  value=challenge_channel.mention if challenge_channel else "No configurado", inline=False)
+        embed.add_field(name="Canal vinculados", value=vinculados_channel.mention if vinculados_channel else "No configurado", inline=False)
         embed.add_field(name="Rol Admin",       value=admin_role.mention  if admin_role  else "No configurado", inline=True)
         embed.add_field(name="Rol Player",      value=player_role.mention if player_role else "No configurado", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -197,10 +291,10 @@ def setup_hll(bot: commands.Bot, pool):
 
             await conn.execute(
                 """
-                INSERT INTO linked_players (discord_id, steam_id, discord_name)
-                VALUES ($1, $2, $3)
+                INSERT INTO linked_players (discord_id, steam_id, discord_name, linked_at)
+                VALUES ($1, $2, $3, NOW())
                 ON CONFLICT (discord_id) DO UPDATE
-                  SET steam_id = $2, discord_name = $3
+                  SET steam_id = $2, discord_name = $3, linked_at = NOW()
                 """,
                 interaction.user.id, steam_id, str(interaction.user),
             )
@@ -211,6 +305,8 @@ def setup_hll(bot: commands.Bot, pool):
             f"Steam: **{player['player_name'] or '?'}**\n"
             f"Steam ID: `{steam_id}`", ephemeral=True
         )
+
+        await update_vinculados_message(interaction.client, pool, interaction.guild_id)
 
     # ── /hll perfil ───────────────────────────────────────────
     @group.command(name="perfil", description="Muestra tu perfil en CRCON")
