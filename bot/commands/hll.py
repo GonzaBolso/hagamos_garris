@@ -156,7 +156,7 @@ def setup_hll(bot: commands.Bot, pool):
 
     # ── /hll registro ─────────────────────────────────────────
     @group.command(name="registro", description="Vinculá tu cuenta de Discord con tu Steam ID")
-    @app_commands.describe(steam_id="Tu Steam ID de 64 bits (ej: 76561198XXXXXXXXX)")
+    @app_commands.describe(steam_id="Tu Steam ID de 64 bits (ej: 76561198XXXXXXXXX). Si no lo tenés, pedile tu ID a un admin")
     @player_or_admin()
     async def registro(interaction: discord.Interaction, steam_id: str):
         await interaction.response.defer(ephemeral=True)

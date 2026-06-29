@@ -127,6 +127,8 @@ def setup_stats(bot: commands.Bot, pool):
                 FROM match_player_stats mps
                 JOIN matches m USING (match_id)
                 WHERE mps.steam_id = $1
+                  AND (mps.kills != 0 OR mps.deaths != 0 OR mps.combat_score != 0
+                       OR mps.offense_score != 0 OR mps.defense_score != 0 OR mps.support_score != 0)
                 ORDER BY m.start_time DESC NULLS LAST
                 LIMIT $2
                 """,
