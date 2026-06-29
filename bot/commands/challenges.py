@@ -310,6 +310,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         metricas="kills, kd_ratio, matches, combat, offense, defense, support, kills_weapon, kills_player — ej: 'kills:20' o 'kills_weapon:$ARMA:10'",
         periodo="Duración del desafío",
         fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)",
+        fecha_inicio="Opcional, solo 'Personalizado': desde cuándo cuenta (futura). Si no se pasa, arranca desde ahora. Mismo formato que fecha_fin",
         arma="Arma exacta para usar como $ARMA en metricas (ej: kills_weapon:$ARMA:10)",
         jugador_victima="Jugador para usar como $JUGADOR en metricas (ej: kills_player:$JUGADOR:5)"
     )
@@ -326,6 +327,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     metricas: str,
                     periodo: app_commands.Choice[str],
                     fecha_fin: str = None,
+                    fecha_inicio: str = None,
                     arma: str = None,
                     jugador_victima: str = None):
         await interaction.response.defer(ephemeral=True)
@@ -361,6 +363,26 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         end_date = None  # se completa después según el período
 
         if periodo.value == "custom":
+            if fecha_inicio:
+                try:
+                    parsed_inicio = datetime.strptime(fecha_inicio.strip(), "%d/%m/%Y %H:%M:%S")
+                except ValueError:
+                    await interaction.followup.send(
+                        "❌ Formato de `fecha_inicio` inválido. Usá DD/MM/AAAA HH:MM:SS "
+                        "(ej: 01/07/2026 20:00:00).",
+                        ephemeral=True
+                    )
+                    return
+
+                start_date = parsed_inicio.replace(tzinfo=TZ_UY).astimezone(timezone.utc)
+                if start_date <= now:
+                    await interaction.followup.send(
+                        "❌ `fecha_inicio` tiene que ser una fecha/hora futura. Si querés que "
+                        "el desafío arranque ahora, simplemente no pases este parámetro.",
+                        ephemeral=True
+                    )
+                    return
+
             if not fecha_fin:
                 await interaction.followup.send(
                     "❌ Para período Personalizado tenés que pasar `fecha_fin` "
@@ -382,6 +404,12 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             if end_date <= now:
                 await interaction.followup.send(
                     "❌ `fecha_fin` tiene que ser una fecha/hora futura.",
+                    ephemeral=True
+                )
+                return
+            if end_date <= start_date:
+                await interaction.followup.send(
+                    "❌ `fecha_fin` tiene que ser posterior a `fecha_inicio`.",
                     ephemeral=True
                 )
                 return
@@ -455,12 +483,17 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         if periodo.value == "current_match":
             hora_inicio = datetime.fromtimestamp(map_start, tz=TZ_UY).strftime("%d/%m %H:%M")
             vence_txt = f"{map_name} (inició {hora_inicio})"
+            comienza_txt = ""
         else:
             vence_txt = format_local(end_date) if end_date else f"({PERIOD_LABELS[periodo.value]})"
+            comienza_txt = (
+                f"Comienza: {format_local(start_date)}\n" if fecha_inicio else ""
+            )
 
         await interaction.followup.send(
             f"✅ Desafío **#{challenge_id} — {nombre}** creado.\n"
             f"Condición: {metrics_line}\n"
+            f"{comienza_txt}"
             f"Período: {PERIOD_LABELS[periodo.value]} • Vence: {vence_txt}",
             ephemeral=True
         )
