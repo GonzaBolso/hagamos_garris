@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 CRCON_URL     = os.environ["CRCON_URL"].rstrip("/")   # ej: http://IP:7010
 CRCON_API_KEY = os.environ.get("CRCON_API_KEY", "")   # opcional en el 7010
 INTERVAL      = int(os.environ.get("COLLECT_INTERVAL_MINUTES", 30)) * 60
+BACKFILL_KILL_EVENTS = os.environ.get("BACKFILL_KILL_EVENTS", "").lower() in ("1", "true", "yes")
 
 DB_DSN = (
     f"postgresql://{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
@@ -82,24 +83,28 @@ async def fetch_live_game_stats(session: aiohttp.ClientSession) -> dict:
 
 
 async def fetch_historical_logs(session: aiohttp.ClientSession, from_: str = None,
-                                 till: str = None, limit: int = 500) -> list:
+                                 till: str = None, limit: int = 500, action: str = "") -> list:
     """
     Consulta get_historical_logs (endpoint POST). Devuelve la lista de
-    eventos (result) sin filtrar — el caller decide qué 'type' usar
-    (ej. solo 'KILL', sin 'TEAM KILL').
+    eventos (result). Si se pasa 'action' (ej. "KILL"), filtra en el
+    propio CRCON con exact_action=True — esto es importante porque el
+    'limit' se aplica sobre TODOS los tipos de evento (chat, conexiones,
+    votos, etc.), no solo kills; sin filtrar por action, una partida muy
+    activa de chat/conexiones puede agotar el límite antes de traer todos
+    los KILL reales, perdiendo datos silenciosamente.
     from_/till: strings ISO datetime, o None para no acotar ese extremo.
     """
     url = f"{CRCON_URL}/api/get_historical_logs"
     body = {
         "player_name": "",
-        "action": "",
+        "action": action,
         "player_id": "",
         "from": from_,
         "till": till,
         "limit": limit,
         "time_sort": "desc",
         "exact_player": False,
-        "exact_action": False,
+        "exact_action": bool(action),
         "server_filter": "",
     }
     async with session.post(url, json=body) as resp:
@@ -112,17 +117,23 @@ async def fetch_historical_logs(session: aiohttp.ClientSession, from_: str = Non
 async def save_kill_events_for_match(conn, session: aiohttp.ClientSession,
                                       match_id: str, start_iso: str, end_iso: str):
     """
-    Al cerrar una partida, consulta get_historical_logs acotado al rango
-    de esa partida (start/end), y guarda cada KILL (no TEAM KILL) en
-    kill_events, asociado a match_id. Se usa para desafíos tipo
-    'kills_weapon' (matar con un arma específica) y 'kills_player'
-    (matar repetidamente a un jugador puntual).
+    Al cerrar una partida, consulta get_historical_logs filtrando
+    action='KILL' (exact_action=True) directamente en el servidor —
+    esto excluye TEAM KILL y, sobre todo, evita que el 'limit' se
+    desperdicie en chat/conexiones/votos de la partida (bug anterior:
+    sin filtrar por action, partidas muy activas perdían la mayoría de
+    sus kills reales porque el límite se llenaba con otros tipos de
+    evento antes de completar los kills).
+    Guarda cada KILL en kill_events, asociado a match_id. Se usa para
+    desafíos tipo 'kills_weapon' y 'kills_player'.
     """
     if not start_iso:
         return  # sin start no podemos acotar el rango, mejor no traer nada
 
     try:
-        events = await fetch_historical_logs(session, from_=start_iso, till=end_iso, limit=1000)
+        events = await fetch_historical_logs(
+            session, from_=start_iso, till=end_iso, limit=10000, action="KILL"
+        )
     except Exception as e:
         log.warning(f"  No se pudo obtener historical_logs para partida {match_id}: {e}")
         return
@@ -130,7 +141,7 @@ async def save_kill_events_for_match(conn, session: aiohttp.ClientSession,
     saved = 0
     for ev in events:
         if ev.get("type") != "KILL":
-            continue  # excluye TEAM KILL y todo lo demás
+            continue  # exact_action=True ya filtra esto, pero por si acaso
 
         killer_id = ev.get("player1_id")
         victim_id = ev.get("player2_id")
@@ -574,7 +585,7 @@ async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int
     from_iso = _live_kills_state["last_event_time"].isoformat() if _live_kills_state["last_event_time"] else None
 
     try:
-        events = await fetch_historical_logs(session, from_=from_iso, limit=500)
+        events = await fetch_historical_logs(session, from_=from_iso, limit=2000, action="KILL")
     except Exception as e:
         log.warning(f"  [live] get_historical_logs falló: {e}")
         return _live_kills_state["kills_by_player"]
@@ -950,11 +961,72 @@ async def live_polling_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):
         await asyncio.sleep(LIVE_POLL_INTERVAL_SECONDS)
 
 
+async def backfill_kill_events(pool: asyncpg.Pool, session: aiohttp.ClientSession):
+    """
+    Recorre TODAS las partidas en 'matches' y completa kill_events para
+    las que tengan menos eventos guardados que kills en su scoreboard
+    (match_player_stats) — es decir, las afectadas por el bug donde
+    save_kill_events_for_match() no filtraba por action='KILL' en el
+    servidor y perdía datos en partidas con mucho chat/conexiones.
+
+    No toca matches ni match_player_stats — solo repuebla kill_events.
+    Se activa con la variable de entorno BACKFILL_KILL_EVENTS=true, y el
+    proceso termina al finalizar (no entra al loop normal).
+    """
+    log.info("=== BACKFILL de kill_events iniciado ===")
+
+    async with pool.acquire() as conn:
+        matches_a_revisar = await conn.fetch(
+            """
+            SELECT m.match_id, m.start_time, m.end_time,
+                   SUM(mps.kills) AS kills_esperados,
+                   COUNT(ke.id) AS kill_events_actuales
+            FROM matches m
+            JOIN match_player_stats mps ON mps.match_id = m.match_id
+            LEFT JOIN kill_events ke ON ke.match_id = m.match_id
+            GROUP BY m.match_id, m.start_time, m.end_time
+            HAVING SUM(mps.kills) > COUNT(ke.id)
+            ORDER BY m.start_time ASC
+            """
+        )
+
+    total = len(matches_a_revisar)
+    log.info(f"  {total} partida(s) incompleta(s) detectada(s), reprocesando...")
+
+    procesadas = 0
+    for row in matches_a_revisar:
+        match_id = row["match_id"]
+        start_time = row["start_time"]
+        end_time = row["end_time"]
+
+        async with pool.acquire() as conn:
+            # Borramos lo parcial que hubiera para esta partida, para no
+            # mezclar datos viejos incompletos con los nuevos completos.
+            await conn.execute("DELETE FROM kill_events WHERE match_id = $1", match_id)
+
+            start_iso = start_time.isoformat() if start_time else None
+            end_iso = end_time.isoformat() if end_time else None
+            await save_kill_events_for_match(conn, session, match_id, start_iso, end_iso)
+
+        procesadas += 1
+        if procesadas % 50 == 0 or procesadas == total:
+            log.info(f"  Backfill: {procesadas}/{total} partidas reprocesadas")
+
+        await asyncio.sleep(0.3)  # no saturar CRCON
+
+    log.info("=== BACKFILL de kill_events completado ===")
+
+
 async def run():
     log.info("Collector iniciado")
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=3)
 
     async with aiohttp.ClientSession(headers=HEADERS) as session:
+        if BACKFILL_KILL_EVENTS:
+            await backfill_kill_events(pool, session)
+            log.info("Backfill terminado, el proceso va a salir ahora.")
+            return
+
         await asyncio.gather(
             main_collector_loop(pool, session),
             live_polling_loop(pool, session),

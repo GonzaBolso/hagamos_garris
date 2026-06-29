@@ -35,6 +35,7 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       COLLECT_INTERVAL_MINUTES: ${COLLECT_INTERVAL_MINUTES:-30}
+      BACKFILL_KILL_EVENTS: ${BACKFILL_KILL_EVENTS:-false}
       TZ: ${TZ:-America/Argentina/Buenos_Aires}
 
   bot:
