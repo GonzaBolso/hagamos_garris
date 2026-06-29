@@ -148,31 +148,35 @@ def setup_hll(bot: commands.Bot, pool):
         canal="Canal donde los jugadores podrán usar los comandos",
         canal_snapshots="Canal donde se mandan los Top diarios/semanales/mensuales automáticos (opcional)",
         canal_desafios="Canal donde se manda la foto final cuando se cierra un desafío (opcional)",
-        canal_vinculados="Canal privado con la lista de cuentas vinculadas Discord<->Steam, actualizada sola (opcional)"
+        canal_vinculados="Canal privado con la lista de cuentas vinculadas Discord<->Steam, actualizada sola (opcional)",
+        canal_eventos="Canal para eventos destacados en vivo (fakeos con melee, y otros a futuro) (opcional)"
     )
     @admin_only()
     async def setchannel(interaction: discord.Interaction,
                           canal: discord.TextChannel,
                           canal_snapshots: discord.TextChannel = None,
                           canal_desafios: discord.TextChannel = None,
-                          canal_vinculados: discord.TextChannel = None):
+                          canal_vinculados: discord.TextChannel = None,
+                          canal_eventos: discord.TextChannel = None):
         snapshots_id = canal_snapshots.id if canal_snapshots is not None else None
         desafios_id = canal_desafios.id if canal_desafios is not None else None
         vinculados_id = canal_vinculados.id if canal_vinculados is not None else None
+        eventos_id = canal_eventos.id if canal_eventos is not None else None
 
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id, challenge_channel_id, vinculados_channel_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO guild_config (guild_id, stats_channel_id, snapshot_channel_id, challenge_channel_id, vinculados_channel_id, eventos_channel_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (guild_id) DO UPDATE
                     SET stats_channel_id = $2,
                         snapshot_channel_id = COALESCE($3, guild_config.snapshot_channel_id),
                         challenge_channel_id = COALESCE($4, guild_config.challenge_channel_id),
                         vinculados_channel_id = COALESCE($5, guild_config.vinculados_channel_id),
+                        eventos_channel_id = COALESCE($6, guild_config.eventos_channel_id),
                         updated_at = NOW()
                 """,
-                interaction.guild_id, canal.id, snapshots_id, desafios_id, vinculados_id
+                interaction.guild_id, canal.id, snapshots_id, desafios_id, vinculados_id, eventos_id
             )
 
         msg = f"✅ Canal de jugadores configurado: {canal.mention}\nLos jugadores solo podrán usar comandos ahí."
@@ -182,6 +186,8 @@ def setup_hll(bot: commands.Bot, pool):
             msg += f"\n✅ Canal de cierre de desafíos: {canal_desafios.mention}"
         if canal_vinculados is not None:
             msg += f"\n✅ Canal de vinculados: {canal_vinculados.mention}"
+        if canal_eventos is not None:
+            msg += f"\n✅ Canal de eventos destacados: {canal_eventos.mention}"
         await interaction.response.send_message(msg, ephemeral=True)
 
         # Al configurar (o reconfigurar) el canal de vinculados, refrescamos
@@ -236,6 +242,7 @@ def setup_hll(bot: commands.Bot, pool):
         snapshot_channel = interaction.guild.get_channel(row["snapshot_channel_id"]) if row.get("snapshot_channel_id") else None
         challenge_channel = interaction.guild.get_channel(row["challenge_channel_id"]) if row.get("challenge_channel_id") else None
         vinculados_channel = interaction.guild.get_channel(row["vinculados_channel_id"]) if row.get("vinculados_channel_id") else None
+        eventos_channel = interaction.guild.get_channel(row["eventos_channel_id"]) if row.get("eventos_channel_id") else None
         admin_role  = interaction.guild.get_role(row["admin_role_id"])  if row["admin_role_id"]  else None
         player_role = interaction.guild.get_role(row["mod_role_id"])    if row["mod_role_id"]    else None
 
@@ -244,6 +251,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="Canal snapshots", value=snapshot_channel.mention if snapshot_channel else "No configurado", inline=False)
         embed.add_field(name="Canal desafíos",  value=challenge_channel.mention if challenge_channel else "No configurado", inline=False)
         embed.add_field(name="Canal vinculados", value=vinculados_channel.mention if vinculados_channel else "No configurado", inline=False)
+        embed.add_field(name="Canal eventos",    value=eventos_channel.mention if eventos_channel else "No configurado", inline=False)
         embed.add_field(name="Rol Admin",       value=admin_role.mention  if admin_role  else "No configurado", inline=True)
         embed.add_field(name="Rol Player",      value=player_role.mention if player_role else "No configurado", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)

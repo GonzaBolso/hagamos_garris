@@ -890,12 +890,93 @@ async def update_challenges_progress(pool: asyncpg.Pool, session: aiohttp.Client
 
 
 LIVE_POLL_INTERVAL_SECONDS = 25
+EVENT_DETECTOR_INTERVAL_SECONDS = 25
+
+# Armas de cuerpo a cuerpo de HLL (una por facción: US, Alemania, URSS,
+# Gran Bretaña). Un kill con cualquiera de estas se considera "fakeo" —
+# evento destacado que se avisa en el canal de eventos, sin relación con
+# desafíos.
+MELEE_WEAPONS = {"M3 KNIFE", "FELDSPATEN", "MPL-50 SPADE", "Fairbairn–Sykes"}
 
 # Estado del cursor de kills en vivo para la partida actual. Se resetea
 # automáticamente cuando cambia map_start (otra partida). steam_id -> {
 #   "by_weapon": {weapon: count}, "by_victim": {victim_id: count}
 # }
 _live_kills_state = {"map_start": None, "last_event_time": None, "kills_by_player": {}}
+
+# Cursor independiente para el detector de eventos destacados (fakeos,
+# etc.) — separado de _live_kills_state porque corre siempre, sin
+# importar si hay desafíos activos.
+_event_detector_state = {"map_start": None, "last_event_time": None}
+
+
+async def detect_and_notify_events(pool: asyncpg.Pool, session: aiohttp.ClientSession):
+    """
+    Corre siempre (sin relación con desafíos activos). Si hay una partida
+    en curso, revisa los KILL nuevos desde el último chequeo y, si alguno
+    usó un arma de cuerpo a cuerpo (MELEE_WEAPONS), lo encola en
+    detected_events para que el bot lo notifique en el canal de eventos.
+    """
+    try:
+        info = await fetch_public_info(session)
+    except Exception as e:
+        log.warning(f"  [eventos] get_public_info falló: {e}")
+        return
+
+    current_map = (info or {}).get("current_map") or {}
+    map_start = current_map.get("start")
+    if map_start is None:
+        return  # no hay partida en curso, nada que revisar
+
+    map_start_dt = datetime.fromtimestamp(map_start, tz=timezone.utc)
+
+    if _event_detector_state["map_start"] != map_start:
+        _event_detector_state["map_start"] = map_start
+        _event_detector_state["last_event_time"] = map_start_dt
+
+    from_iso = _event_detector_state["last_event_time"].isoformat()
+
+    try:
+        events = await fetch_historical_logs(session, from_=from_iso, limit=500, action="KILL")
+    except Exception as e:
+        log.warning(f"  [eventos] get_historical_logs falló: {e}")
+        return
+
+    newest_time = _event_detector_state["last_event_time"]
+    fakeos = []
+
+    for ev in events:
+        if ev.get("type") != "KILL":
+            continue
+
+        ev_time = parse_dt(ev.get("event_time"))
+        if ev_time and (newest_time is None or ev_time > newest_time):
+            newest_time = ev_time
+
+        weapon = ev.get("weapon")
+        if weapon in MELEE_WEAPONS:
+            killer = ev.get("player1_name") or "?"
+            victim = ev.get("player2_name") or "?"
+            fakeos.append(f"🔪 **{killer}** fakeó a **{victim}** con `{weapon}`")
+
+    if newest_time:
+        _event_detector_state["last_event_time"] = newest_time
+
+    if not fakeos:
+        return
+
+    async with pool.acquire() as conn:
+        guilds = await conn.fetch(
+            "SELECT guild_id FROM guild_config WHERE eventos_channel_id IS NOT NULL"
+        )
+        for g in guilds:
+            for mensaje in fakeos:
+                await conn.execute(
+                    "INSERT INTO detected_events (guild_id, event_type, message) VALUES ($1, $2, $3)",
+                    g["guild_id"], "fakeo", mensaje
+                )
+
+    log.info(f"  [eventos] {len(fakeos)} fakeo(s) detectado(s)")
 
 
 async def main_collector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):
@@ -959,6 +1040,22 @@ async def live_polling_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):
             log.error(f"Error en live_polling_loop: {e}", exc_info=True)
 
         await asyncio.sleep(LIVE_POLL_INTERVAL_SECONDS)
+
+
+async def event_detector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):
+    """
+    Loop separado, siempre activo (sin relación con desafíos), que
+    detecta eventos destacados (fakeos con melee, y a futuro otros) y
+    los encola en detected_events para que el bot los notifique.
+    """
+    log.info(f"Detector de eventos iniciado (cada {EVENT_DETECTOR_INTERVAL_SECONDS}s)")
+    while True:
+        try:
+            await detect_and_notify_events(pool, session)
+        except Exception as e:
+            log.error(f"Error en event_detector_loop: {e}", exc_info=True)
+
+        await asyncio.sleep(EVENT_DETECTOR_INTERVAL_SECONDS)
 
 
 async def backfill_kill_events(pool: asyncpg.Pool, session: aiohttp.ClientSession):
@@ -1030,6 +1127,7 @@ async def run():
         await asyncio.gather(
             main_collector_loop(pool, session),
             live_polling_loop(pool, session),
+            event_detector_loop(pool, session),
         )
 
 

@@ -16,6 +16,7 @@ from commands.stats import setup_stats
 from commands.challenges import setup_challenges
 from snapshot_task import setup_snapshot_task
 from challenge_close_task import setup_challenge_close_task
+from event_notifier_task import setup_event_notifier_task
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -73,6 +74,10 @@ class HLLBot(commands.Bot):
         self.challenge_close_loop.start()
         log.info("Tarea de notificación de cierre de desafíos iniciada (cada 1 min)")
 
+        self.event_notifier_loop = setup_event_notifier_task(self, self.pool)
+        self.event_notifier_loop.start()
+        log.info("Tarea de notificación de eventos destacados iniciada (cada 20s)")
+
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
         await self.change_presence(
@@ -87,6 +92,8 @@ class HLLBot(commands.Bot):
             self.snapshot_loop.cancel()
         if hasattr(self, "challenge_close_loop"):
             self.challenge_close_loop.cancel()
+        if hasattr(self, "event_notifier_loop"):
+            self.event_notifier_loop.cancel()
         await crcon.close()
         await super().close()
 

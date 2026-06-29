@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS guild_config (
     challenge_channel_id    BIGINT,             -- canal donde se manda la foto final al cerrar un desafío
     vinculados_channel_id   BIGINT,             -- canal privado con la lista de vinculados Discord<->Steam
     vinculados_message_id   BIGINT,             -- mensaje fijo que se edita con la lista, en ese canal
+    eventos_channel_id      BIGINT,             -- canal de eventos destacados en vivo (fakeos con melee, etc.)
     log_channel_id          BIGINT,
     admin_role_id           BIGINT,
     mod_role_id             BIGINT,
@@ -113,6 +114,20 @@ DROP TABLE IF EXISTS challenge_progress CASCADE;
 DROP TABLE IF EXISTS challenge_metric_progress CASCADE;
 DROP TABLE IF EXISTS challenge_metrics CASCADE;
 DROP TABLE IF EXISTS challenges CASCADE;
+
+-- ── Eventos destacados detectados en vivo (fakeos con melee, etc.) ──
+-- El collector detecta y encola; el bot revisa y notifica a Discord en
+-- el canal eventos_channel_id (mismo patrón que el cierre de desafíos).
+CREATE TABLE IF NOT EXISTS detected_events (
+    id          SERIAL PRIMARY KEY,
+    guild_id    BIGINT NOT NULL,
+    event_type  VARCHAR(30) NOT NULL,
+    message     TEXT NOT NULL,
+    notified    BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_detected_events_pending ON detected_events (guild_id, notified);
 
 CREATE TABLE challenges (
     id                          SERIAL PRIMARY KEY,
