@@ -426,7 +426,7 @@ def setup_hll(bot: commands.Bot, pool):
                         inline=False)
         embed.add_field(name="🏆 Score",
                         value=f"Aliados {score_allied} — {score_axis} Eje", inline=True)
-        embed.add_field(name="⏱️ Tiempo restante", value=time_rem, inline=True)
+        embed.add_field(name="⏱️ Tiempo restante", value=time_rem, inline=False)
         await interaction.followup.send(embed=embed)
 
     # ── /hll online ───────────────────────────────────────────

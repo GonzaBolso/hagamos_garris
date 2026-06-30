@@ -310,7 +310,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         metricas="kills, kd_ratio, matches, combat, offense, defense, support, kills_weapon, kills_player — ej: 'kills:20' o 'kills_weapon:$ARMA:10'",
         periodo="Duración del desafío",
         fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)",
-        fecha_inicio="Opcional, solo 'Personalizado': desde cuándo cuenta (futura). Si no se pasa, arranca desde ahora. Mismo formato que fecha_fin",
+        fecha_inicio="Opcional, solo 'Personalizado': desde cuándo cuenta. Mismo formato que fecha_fin",
         arma="Arma exacta para usar como $ARMA en metricas (ej: kills_weapon:$ARMA:10)",
         jugador_victima="Jugador para usar como $JUGADOR en metricas (ej: kills_player:$JUGADOR:5)"
     )

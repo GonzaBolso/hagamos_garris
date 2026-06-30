@@ -114,6 +114,48 @@ async def fetch_historical_logs(session: aiohttp.ClientSession, from_: str = Non
         return data.get("result") or []
 
 
+async def fetch_recent_logs(session: aiohttp.ClientSession, limit: int = 500,
+                             action: str = "") -> list:
+    """
+    Consulta get_recent_logs (endpoint POST) — pensado para uso en vivo,
+    a diferencia de get_historical_logs (que es para rangos de fecha
+    puntuales, como el backfill). No tiene from/till, solo 'end' (tamaño
+    de la consulta) — siempre trae "los últimos N", así que el caller es
+    responsable de filtrar los que ya procesó (ver _make_event_key).
+    Trae timestamp_ms (milisegundos), más preciso que el event_time de
+    get_historical_logs (que es por segundo, insuficiente para
+    desambiguar eventos simultáneos sin duplicarlos).
+    """
+    url = f"{CRCON_URL}/api/get_recent_logs"
+    body = {
+        "end": limit,
+        "filter_action": [action] if action else [],
+        "filter_player": [],
+        "exact_action": bool(action),
+        "inclusive_filter": True,
+    }
+    async with session.post(url, json=body) as resp:
+        data = await resp.json()
+        if data.get("failed"):
+            raise RuntimeError(f"get_recent_logs falló: {data.get('error')}")
+        return (data.get("result") or {}).get("logs") or []
+
+
+def _make_event_key(ev: dict) -> str:
+    """
+    Clave única por evento, para deduplicar entre consultas sucesivas de
+    fetch_recent_logs (que siempre trae 'los últimos N', con solapamiento
+    natural). Combina timestamp_ms + ambos jugadores + arma — más
+    confiable que comparar solo timestamps, que pueden repetirse entre
+    eventos simultáneos.
+    """
+    return (
+        f"{ev.get('timestamp_ms')}|{ev.get('player_id_1')}|"
+        f"{ev.get('player_id_2')}|{ev.get('weapon')}"
+    )
+
+
+
 async def save_kill_events_for_match(conn, session: aiohttp.ClientSession,
                                       match_id: str, start_iso: str, end_iso: str):
     """
@@ -569,9 +611,12 @@ async def resolve_match_scope(conn, challenge) -> tuple:
 async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int, map_start_dt) -> dict:
     """
     Mantiene _live_kills_state al día para la partida en curso (map_start).
-    Si cambió la partida, resetea el estado. Consulta solo los KILL nuevos
-    desde el último evento ya contado (cursor por event_time), evitando
-    contar el mismo kill dos veces entre ciclos sucesivos.
+    Si cambió la partida, resetea el estado. Usa get_recent_logs (sin
+    from/till — siempre trae "los últimos N"), deduplicando por clave
+    compuesta (_make_event_key) en vez de solo comparar timestamps, ya
+    que event_time/timestamp_ms pueden repetirse entre kills simultáneos
+    y el solapamiento natural de "traer los últimos N" generaría avisos
+    o conteos duplicados si solo comparáramos fecha.
 
     Devuelve kills_by_player: steam_id -> {
         "by_weapon": {weapon: count}, "by_victim": {victim_id: count}
@@ -579,43 +624,47 @@ async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int
     """
     if _live_kills_state["map_start"] != map_start:
         _live_kills_state["map_start"] = map_start
-        _live_kills_state["last_event_time"] = map_start_dt
         _live_kills_state["kills_by_player"] = {}
-
-    from_iso = _live_kills_state["last_event_time"].isoformat() if _live_kills_state["last_event_time"] else None
+        _live_kills_state["seen_keys"] = set()
 
     try:
-        events = await fetch_historical_logs(session, from_=from_iso, limit=2000, action="KILL")
+        events = await fetch_recent_logs(session, limit=2000, action="KILL")
     except Exception as e:
-        log.warning(f"  [live] get_historical_logs falló: {e}")
+        log.warning(f"  [live] get_recent_logs falló: {e}")
         return _live_kills_state["kills_by_player"]
 
-    newest_time = _live_kills_state["last_event_time"]
+    seen_keys = _live_kills_state.setdefault("seen_keys", set())
+
     for ev in events:
-        if ev.get("type") != "KILL":
+        if ev.get("action") != "KILL":
             continue
-        killer_id = ev.get("player1_id")
-        victim_id = ev.get("player2_id")
+        killer_id = ev.get("player_id_1")
+        victim_id = ev.get("player_id_2")
         weapon = ev.get("weapon")
         if not killer_id or not victim_id:
             continue
 
-        ev_time = parse_dt(ev.get("event_time"))
-        if ev_time and (newest_time is None or ev_time > newest_time):
-            newest_time = ev_time
+        # Solo contamos kills de esta partida en curso (después de que
+        # arrancó el mapa actual) — get_recent_logs no filtra por partida.
+        ts_ms = ev.get("timestamp_ms")
+        if ts_ms is not None and map_start_dt is not None:
+            if ts_ms < map_start_dt.timestamp() * 1000:
+                continue
+
+        key = _make_event_key(ev)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
 
         player_state = _live_kills_state["kills_by_player"].setdefault(
             killer_id, {"player_name": None, "by_weapon": {}, "by_victim": {}}
         )
-        killer_name = ev.get("player1_name")
+        killer_name = ev.get("player_name_1")
         if killer_name:
             player_state["player_name"] = killer_name
         if weapon:
             player_state["by_weapon"][weapon] = player_state["by_weapon"].get(weapon, 0) + 1
         player_state["by_victim"][victim_id] = player_state["by_victim"].get(victim_id, 0) + 1
-
-    if newest_time:
-        _live_kills_state["last_event_time"] = newest_time
 
     return _live_kills_state["kills_by_player"]
 
@@ -902,20 +951,21 @@ MELEE_WEAPONS = {"M3 KNIFE", "FELDSPATEN", "MPL-50 SPADE", "Fairbairn–Sykes"}
 # automáticamente cuando cambia map_start (otra partida). steam_id -> {
 #   "by_weapon": {weapon: count}, "by_victim": {victim_id: count}
 # }
-_live_kills_state = {"map_start": None, "last_event_time": None, "kills_by_player": {}}
+_live_kills_state = {"map_start": None, "kills_by_player": {}, "seen_keys": set()}
 
 # Cursor independiente para el detector de eventos destacados (fakeos,
 # etc.) — separado de _live_kills_state porque corre siempre, sin
 # importar si hay desafíos activos.
-_event_detector_state = {"map_start": None, "last_event_time": None}
+_event_detector_state = {"map_start": None, "seen_keys": set()}
 
 
 async def detect_and_notify_events(pool: asyncpg.Pool, session: aiohttp.ClientSession):
     """
     Corre siempre (sin relación con desafíos activos). Si hay una partida
-    en curso, revisa los KILL nuevos desde el último chequeo y, si alguno
-    usó un arma de cuerpo a cuerpo (MELEE_WEAPONS), lo encola en
-    detected_events para que el bot lo notifique en el canal de eventos.
+    en curso, revisa los KILL recientes (get_recent_logs) y, si alguno
+    usó un arma de cuerpo a cuerpo (MELEE_WEAPONS) y no fue notificado
+    antes (deduplicado por _make_event_key), lo encola en detected_events
+    para que el bot lo notifique en el canal de eventos.
     """
     try:
         info = await fetch_public_info(session)
@@ -932,35 +982,35 @@ async def detect_and_notify_events(pool: asyncpg.Pool, session: aiohttp.ClientSe
 
     if _event_detector_state["map_start"] != map_start:
         _event_detector_state["map_start"] = map_start
-        _event_detector_state["last_event_time"] = map_start_dt
-
-    from_iso = _event_detector_state["last_event_time"].isoformat()
+        _event_detector_state["seen_keys"] = set()
 
     try:
-        events = await fetch_historical_logs(session, from_=from_iso, limit=500, action="KILL")
+        events = await fetch_recent_logs(session, limit=500, action="KILL")
     except Exception as e:
-        log.warning(f"  [eventos] get_historical_logs falló: {e}")
+        log.warning(f"  [eventos] get_recent_logs falló: {e}")
         return
 
-    newest_time = _event_detector_state["last_event_time"]
+    seen_keys = _event_detector_state.setdefault("seen_keys", set())
     fakeos = []
 
     for ev in events:
-        if ev.get("type") != "KILL":
+        if ev.get("action") != "KILL":
             continue
 
-        ev_time = parse_dt(ev.get("event_time"))
-        if ev_time and (newest_time is None or ev_time > newest_time):
-            newest_time = ev_time
+        ts_ms = ev.get("timestamp_ms")
+        if ts_ms is not None and ts_ms < map_start_dt.timestamp() * 1000:
+            continue  # kill de una partida anterior, no de la actual
+
+        key = _make_event_key(ev)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
 
         weapon = ev.get("weapon")
         if weapon in MELEE_WEAPONS:
-            killer = ev.get("player1_name") or "?"
-            victim = ev.get("player2_name") or "?"
+            killer = ev.get("player_name_1") or "?"
+            victim = ev.get("player_name_2") or "?"
             fakeos.append(f"🔪 **{killer}** fakeó a **{victim}** con `{weapon}`")
-
-    if newest_time:
-        _event_detector_state["last_event_time"] = newest_time
 
     if not fakeos:
         return
