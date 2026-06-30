@@ -425,7 +425,7 @@ def setup_hll(bot: commands.Bot, pool):
                         value=f"{allied + axis}/{max_players} (Aliados: {allied} | Eje: {axis})",
                         inline=False)
         embed.add_field(name="🏆 Score",
-                        value=f"Aliados {score_allied} — {score_axis} Eje", inline=True)
+                        value=f"Aliados {score_allied} — {score_axis} Eje", inline=False)
         embed.add_field(name="⏱️ Tiempo restante", value=time_rem, inline=False)
         await interaction.followup.send(embed=embed)
 
@@ -633,6 +633,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll desafio progreso <id>", value="Ranking de progreso de un desafío", inline=False)
         embed.add_field(name="/stats show",              value="Tus stats acumulados", inline=False)
         embed.add_field(name="/stats games [cantidad]",  value="Tus últimas N partidas", inline=False)
+        embed.add_field(name="/stats weapon", value="Tus kills con tus armas + Ranking", inline=False)
         return embed
 
     @group.command(name="help", description="Lista de comandos disponibles")
