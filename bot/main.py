@@ -86,8 +86,20 @@ class HLLBot(commands.Bot):
                 name="Hell Let Loose 🪖"
             )
         )
+        await self._send_status("🟢 **Bot conectado** y listo.")
+
+    async def _send_status(self, message: str):
+        """Manda un mensaje al canal de status si está configurado."""
+        if not config.STATUS_CHANNEL_ID:
+            return
+        try:
+            channel = self.get_channel(config.STATUS_CHANNEL_ID) or                       await self.fetch_channel(config.STATUS_CHANNEL_ID)
+            await channel.send(message)
+        except Exception as e:
+            log.warning(f"No pude mandar mensaje de status: {e}")
 
     async def close(self):
+        await self._send_status("🔴 **Bot desconectado**.")
         if hasattr(self, "snapshot_loop"):
             self.snapshot_loop.cancel()
         if hasattr(self, "challenge_close_loop"):

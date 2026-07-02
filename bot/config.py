@@ -10,4 +10,7 @@ DB_DSN = (
     f"postgresql://{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
     f"@{os.environ['DB_HOST']}:{os.environ['DB_PORT']}/{os.environ['DB_NAME']}"
 )
-    
+
+# Canal de Discord donde se mandan mensajes de estado del bot (opcional)
+_status = os.environ.get("STATUS_CHANNEL_ID", "")
+STATUS_CHANNEL_ID = int(_status) if _status.strip().isdigit() else None
