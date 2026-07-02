@@ -347,16 +347,18 @@ async def fetch_metric_values(conn, metric: str, match_ids: list = None,
         if match_ids is not None:
             where_clause = "mps.match_id = ANY($1::varchar[])"
             params = [match_ids, param]
+            param_n = 2
         else:
             where_clause = "m.start_time BETWEEN $1 AND $2"
             params = [start_date, end_date, param]
+            param_n = 3
         query = f"""
             SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
-                   COALESCE(SUM((mps.{jsonb_col}->>${ {True: 2, False: 3}[match_ids is not None] })::int), 0) AS value
+                   COALESCE(SUM((mps.{jsonb_col}->>${param_n})::int), 0) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
             WHERE {where_clause}
-              AND mps.{jsonb_col} ? ${ {True: 2, False: 3}[match_ids is not None] }
+              AND mps.{jsonb_col} ? ${param_n}
             GROUP BY mps.steam_id
         """
         return await conn.fetch(query, *params)
