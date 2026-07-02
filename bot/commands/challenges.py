@@ -28,6 +28,7 @@ METRIC_LABELS = {
     "support":       "🤝 Support",
     "kills_weapon":  "🔫 Kills con arma",
     "kills_player":  "🎯 Kills a jugador",
+    "kills_type":    "⚔️ Kills por tipo",
 }
 
 METRIC_EMOJIS = {
@@ -40,11 +41,12 @@ METRIC_EMOJIS = {
     "support":       "🤝",
     "kills_weapon":  "🔫",
     "kills_player":  "🎯",
+    "kills_type":    "⚔️",
 }
 
 # Métricas que necesitan un parámetro extra (arma exacta o steam_id de
 # víctima) además del target numérico. Formato: metrica:param:target
-PARAM_METRICS = {"kills_weapon", "kills_player"}
+PARAM_METRICS = {"kills_weapon", "kills_player", "kills_type"}
 
 VALID_METRICS = set(METRIC_LABELS.keys())
 
@@ -269,7 +271,9 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                 "Ejemplo: `kills:20,kd_ratio:2` (debe cumplir ambas)\n\n"
                 "**Con parámetro** (kills_weapon, kills_player): `metrica:parametro:objetivo`\n"
                 "Ejemplo: `kills_weapon:BAZOOKA:10` (10 kills con BAZOOKA, nombre exacto del arma)\n"
-                "Ejemplo: `kills_player:76561198XXXXXXXXX:5` (5 kills a ese steam_id)"
+                "Ejemplo: `kills_player:76561198XXXXXXXXX:5` (5 kills a ese steam_id)\n"
+                "Ejemplo: `kills_type:infantry:50` (50 kills de tipo infantry)\n"
+                "Tipos válidos: infantry, armor, machine_gun, sniper, bazooka, grenade, mine, satchel, commander, artillery, self_propelled_artillery"
             ),
             color=0x5865F2
         )
@@ -307,7 +311,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
     @admin_sub.command(name="crear", description="Crea un desafío configurable")
     @app_commands.describe(
         nombre="Nombre del desafío (ej: 'Cazador de la semana')",
-        metricas="kills, kd_ratio, matches, combat, offense, defense, support, kills_weapon, kills_player — ej: 'kills:20' o 'kills_weapon:$ARMA:10'",
+        metricas="kills, kd_ratio, matches, combat, offense, defense, support, kills_weapon, kills_player, kills_type — ej: 'kills:20' o 'kills_weapon:$ARMA:10'",
         periodo="Duración del desafío",
         fecha_fin="Si elegís 'Personalizado': cuándo termina, formato DD/MM/AAAA HH:MM:SS (ej: 01/07/2026 22:00:00)",
         fecha_inicio="Opcional, solo 'Personalizado': desde cuándo cuenta. Mismo formato que fecha_fin",

@@ -84,19 +84,19 @@ HLL_WEAPONS = [
 
 async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
     """
-    Devuelve el Top N de jugadores con más kills usando un arma exacta,
+    Devuelve el Top N de jugadores con mas kills usando un arma exacta,
     para /hll weapon. Lista de dicts {steam_id, player_name, kills, matches}.
-    'matches' es la cantidad de partidas distintas en las que usó esa
-    arma al menos una vez (no partidas jugadas en total).
+    Usa la columna JSONB 'weapons' de match_player_stats.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT killer_id AS steam_id, MAX(killer_name) AS player_name,
-                   COUNT(*) AS kills, COUNT(DISTINCT match_id) AS matches
-            FROM kill_events
-            WHERE weapon = $1
-            GROUP BY killer_id
+            SELECT steam_id, MAX(player_name) AS player_name,
+                   SUM((weapons->>$1)::int) AS kills,
+                   COUNT(*) AS matches
+            FROM match_player_stats
+            WHERE weapons ? $1
+            GROUP BY steam_id
             ORDER BY kills DESC
             LIMIT $2
             """,
@@ -112,9 +112,8 @@ async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
 async def get_all_weapons_with_rank(pool, steam_id: str) -> list:
     """
     Devuelve TODAS las armas con las que el jugador tiene al menos un
-    kill, con su rank (posición) entre todos los jugadores que usaron
-    esa arma. Usa una sola query con RANK() OVER (PARTITION BY weapon),
-    en vez de una consulta separada por arma.
+    kill, con su rank entre todos los jugadores que usaron esa arma.
+    Usa la columna JSONB 'weapons' de match_player_stats.
     Lista de dicts {weapon, kills, rank, total_players}, ordenada por
     kills descendente.
     """
@@ -122,20 +121,20 @@ async def get_all_weapons_with_rank(pool, steam_id: str) -> list:
         rows = await conn.fetch(
             """
             WITH kills_per_player_weapon AS (
-                SELECT killer_id, weapon, COUNT(*) AS kills
-                FROM kill_events
-                WHERE weapon IS NOT NULL
-                GROUP BY killer_id, weapon
+                SELECT steam_id, key AS weapon, SUM(value::int) AS kills
+                FROM match_player_stats,
+                     jsonb_each_text(weapons) AS t(key, value)
+                GROUP BY steam_id, key
             ),
             ranked AS (
-                SELECT killer_id, weapon, kills,
+                SELECT steam_id, weapon, kills,
                        RANK() OVER (PARTITION BY weapon ORDER BY kills DESC) AS rank,
                        COUNT(*) OVER (PARTITION BY weapon) AS total_players
                 FROM kills_per_player_weapon
             )
             SELECT weapon, kills, rank, total_players
             FROM ranked
-            WHERE killer_id = $1
+            WHERE steam_id = $1
             ORDER BY kills DESC
             """,
             steam_id
@@ -348,20 +347,16 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
     }
     extras_def = EXTRAS_BY_COLUMN.get(col, [("Partidas", fmt_partidas), ("KD", fmt_kd)])
 
-    extra_header = "".join(f" {label} " for label, _ in extras_def)
-    header = f"`#   Jugador               {value_label:<8}{extra_header}`\n" + "─" * 46
-    lines = [header]
+    lines = []
 
     for i, r in enumerate(rows):
-        rank = f"{i+1:>2}."
+        pos = i + 1
 
         if include_links:
             name_display = steam_profile_link(r["last_name"], r["steam_id"])
         else:
             raw_name = (r["last_name"] or "?").replace("[", "(").replace("]", ")")
-            # Salvaguarda: un nombre inusualmente largo no debe poder
-            # empujar el total del mensaje sobre el límite de Discord.
-            name_display = raw_name if len(raw_name) <= 18 else raw_name[:17] + "…"
+            name_display = raw_name if len(raw_name) <= 22 else raw_name[:21] + "…"
 
         value = r[col]
         value_str = f"{value:.2f}" if isinstance(value, float) else str(value)
@@ -370,7 +365,7 @@ def build_leaderboard_embed(rows, col: str, categoria_name: str, period_value: s
         extra_str = (" · " + " · ".join(extras)) if extras else ""
 
         lines.append(
-            f"`{rank}` {name_display} — **{value_str}**{extra_str}"
+            f"{pos}. {name_display} — **{value_str}**{extra_str}"
         )
 
     embed = discord.Embed(

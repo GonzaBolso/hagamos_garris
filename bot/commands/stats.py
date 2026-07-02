@@ -13,16 +13,18 @@ from leaderboards import get_player_ranks, get_all_weapons_with_rank
 
 async def get_top_weapons(pool, steam_id: str, limit: int = 5) -> list:
     """
-    Devuelve las armas con más kills del jugador, ordenadas de mayor a
+    Devuelve las armas con mas kills del jugador, ordenadas de mayor a
     menor. Lista de dicts {weapon, kills}.
+    Usa la columna JSONB 'weapons' de match_player_stats.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT weapon, COUNT(*) AS kills
-            FROM kill_events
-            WHERE killer_id = $1 AND weapon IS NOT NULL
-            GROUP BY weapon
+            SELECT key AS weapon, SUM(value::int) AS kills
+            FROM match_player_stats,
+                 jsonb_each_text(weapons) AS t(key, value)
+            WHERE steam_id = $1
+            GROUP BY key
             ORDER BY kills DESC
             LIMIT $2
             """,

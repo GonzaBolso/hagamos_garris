@@ -7,6 +7,7 @@ Flujo:
 import asyncio
 import os
 import logging
+import json
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
@@ -22,7 +23,7 @@ log = logging.getLogger(__name__)
 CRCON_URL     = os.environ["CRCON_URL"].rstrip("/")   # ej: http://IP:7010
 CRCON_API_KEY = os.environ.get("CRCON_API_KEY", "")   # opcional en el 7010
 INTERVAL      = int(os.environ.get("COLLECT_INTERVAL_MINUTES", 30)) * 60
-BACKFILL_KILL_EVENTS = os.environ.get("BACKFILL_KILL_EVENTS", "").lower() in ("1", "true", "yes")
+BACKFILL_MATCH_STATS = os.environ.get("BACKFILL_MATCH_STATS", "").lower() in ("1", "true", "yes")
 
 DB_DSN = (
     f"postgresql://{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
@@ -40,10 +41,13 @@ def parse_dt(s):
         return None
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
-        # CRCON manda timestamps naive; asumimos UTC (consistente con los
-        # epoch de start/end de get_scoreboard_maps, que sí son UTC).
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+        # CRCON manda la mayoria de los timestamps naive en hora LOCAL del
+        # servidor (UTC-3: event_time, creation_time, start/end de
+        # get_scoreboard_maps). Los convertimos a UTC sumando 3 horas.
+        # Excepcion: start/end de get_map_scoreboard vienen con offset
+        # explicito (+00:00), asi que ese branch nunca llega aca.
+        dt = dt.replace(tzinfo=timezone(timedelta(hours=-3)))
+    return dt.astimezone(timezone.utc)
 
 
 async def fetch_scoreboard_maps(session: aiohttp.ClientSession, page: int = 1) -> dict:
@@ -81,37 +85,6 @@ async def fetch_live_game_stats(session: aiohttp.ClientSession) -> dict:
             raise RuntimeError(f"get_live_game_stats falló: {data.get('error')}")
         return data.get("result", {})
 
-
-async def fetch_historical_logs(session: aiohttp.ClientSession, from_: str = None,
-                                 till: str = None, limit: int = 500, action: str = "") -> list:
-    """
-    Consulta get_historical_logs (endpoint POST). Devuelve la lista de
-    eventos (result). Si se pasa 'action' (ej. "KILL"), filtra en el
-    propio CRCON con exact_action=True — esto es importante porque el
-    'limit' se aplica sobre TODOS los tipos de evento (chat, conexiones,
-    votos, etc.), no solo kills; sin filtrar por action, una partida muy
-    activa de chat/conexiones puede agotar el límite antes de traer todos
-    los KILL reales, perdiendo datos silenciosamente.
-    from_/till: strings ISO datetime, o None para no acotar ese extremo.
-    """
-    url = f"{CRCON_URL}/api/get_historical_logs"
-    body = {
-        "player_name": "",
-        "action": action,
-        "player_id": "",
-        "from": from_,
-        "till": till,
-        "limit": limit,
-        "time_sort": "desc",
-        "exact_player": False,
-        "exact_action": bool(action),
-        "server_filter": "",
-    }
-    async with session.post(url, json=body) as resp:
-        data = await resp.json()
-        if data.get("failed"):
-            raise RuntimeError(f"get_historical_logs falló: {data.get('error')}")
-        return data.get("result") or []
 
 
 async def fetch_recent_logs(session: aiohttp.ClientSession, limit: int = 500,
@@ -156,61 +129,20 @@ def _make_event_key(ev: dict) -> str:
 
 
 
-async def save_kill_events_for_match(conn, session: aiohttp.ClientSession,
-                                      match_id: str, start_iso: str, end_iso: str):
+
+async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps: list,
+                        live_map_start_epoch: float = None) -> int:
     """
-    Al cerrar una partida, consulta get_historical_logs filtrando
-    action='KILL' (exact_action=True) directamente en el servidor —
-    esto excluye TEAM KILL y, sobre todo, evita que el 'limit' se
-    desperdicie en chat/conexiones/votos de la partida (bug anterior:
-    sin filtrar por action, partidas muy activas perdían la mayoría de
-    sus kills reales porque el límite se llenaba con otros tipos de
-    evento antes de completar los kills).
-    Guarda cada KILL en kill_events, asociado a match_id. Se usa para
-    desafíos tipo 'kills_weapon' y 'kills_player'.
+    live_map_start_epoch: timestamp epoch (UTC) de inicio de la partida que
+    está EN CURSO ahora mismo según get_public_info. get_scoreboard_maps
+    incluye esa partida en la lista aunque todavía no haya terminado, con
+    un "end" que no es el cierre real (sigue corriendo mientras la partida
+    sigue activa). Si la procesamos ahí, queda guardada en 'matches' con
+    end_time a medio camino para siempre, porque exists=True la salta en
+    los próximos ciclos. Por eso la salteamos mientras siga siendo la
+    partida en vivo — recién se procesa, con datos finales, cuando ya
+    terminó y aparece la próxima partida arrancada.
     """
-    if not start_iso:
-        return  # sin start no podemos acotar el rango, mejor no traer nada
-
-    try:
-        events = await fetch_historical_logs(
-            session, from_=start_iso, till=end_iso, limit=10000, action="KILL"
-        )
-    except Exception as e:
-        log.warning(f"  No se pudo obtener historical_logs para partida {match_id}: {e}")
-        return
-
-    saved = 0
-    for ev in events:
-        if ev.get("type") != "KILL":
-            continue  # exact_action=True ya filtra esto, pero por si acaso
-
-        killer_id = ev.get("player1_id")
-        victim_id = ev.get("player2_id")
-        if not killer_id or not victim_id:
-            continue
-
-        await conn.execute(
-            """
-            INSERT INTO kill_events
-                (match_id, event_time, killer_id, killer_name, victim_id, victim_name, weapon)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            match_id,
-            parse_dt(ev.get("event_time")),
-            killer_id,
-            ev.get("player1_name", ""),
-            victim_id,
-            ev.get("player2_name", ""),
-            ev.get("weapon"),
-        )
-        saved += 1
-
-    if saved:
-        log.info(f"  [{match_id}] {saved} kill_events guardados")
-
-
-async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps: list) -> int:
     new_count = 0
 
     async with pool.acquire() as conn:
@@ -226,13 +158,50 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
             if exists:
                 continue
 
+            # Es la partida en curso ahora mismo? Si es así, todavía no
+            # cerró de verdad — no la guardamos en este ciclo.
+            if live_map_start_epoch is not None:
+                m_start_raw = m.get("start")
+                if m_start_raw:
+                    try:
+                        naive = datetime.fromisoformat(m_start_raw)
+                        if naive.tzinfo is None:
+                            # get_scoreboard_maps manda esto sin offset, en
+                            # hora LOCAL del servidor (confirmado UTC-3).
+                            naive = naive.replace(tzinfo=timezone(timedelta(hours=-3)))
+                        m_start_epoch = naive.timestamp()
+                        if abs(m_start_epoch - live_map_start_epoch) < 5:
+                            continue  # es la partida en vivo, todavía no cerró
+                    except Exception:
+                        pass
+
             # Datos básicos del mapa
             map_info     = m.get("map") or {}
             map_name     = map_info.get("pretty_name") or map_info.get("id", "?")
             result       = m.get("result") or {}
             allied_score = result.get("allied")
             axis_score   = result.get("axis")
-            match_start  = parse_dt(m.get("start"))
+
+            # Buscar stats detallados con get_map_scoreboard. Si falla o no
+            # trae "start" (puede pasar si la partida acaba de cerrar y
+            # CRCON todavía no terminó de procesar su get_map_scoreboard),
+            # NO insertamos la partida con datos a medias — la salteamos
+            # para que el próximo ciclo la reintente. Insertarla con el
+            # fallback naive de get_scoreboard_maps (sin offset, hora
+            # LOCAL del servidor) reintroducía el bug de -3h en
+            # start_time/end_time que ya habíamos corregido.
+            try:
+                detail = await fetch_map_scoreboard(session, int(match_id))
+                players = detail.get("player_stats") or []
+            except Exception as e:
+                log.warning(f"  No se pudieron obtener stats de partida {match_id}: {e}, se reintenta en el próximo ciclo")
+                continue
+
+            match_start = parse_dt(detail.get("start"))
+            match_end   = parse_dt(detail.get("end"))
+            if not match_start:
+                log.warning(f"  get_map_scoreboard({match_id}) sin 'start' válido, se reintenta en el próximo ciclo")
+                continue
 
             # Insertar la partida
             await conn.execute(
@@ -244,18 +213,20 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                 match_id,
                 map_name,
                 match_start,
-                parse_dt(m.get("end")),
+                match_end,
                 allied_score,
                 axis_score,
             )
 
-            # Buscar stats detallados con get_map_scoreboard
-            try:
-                detail = await fetch_map_scoreboard(session, int(match_id))
-                players = detail.get("player_stats") or []
-            except Exception as e:
-                log.warning(f"  No se pudieron obtener stats de partida {match_id}: {e}")
-                players = []
+            # Construir lookup nombre->steam_id con todos los jugadores
+            # de esta partida, para convertir most_killed/death_by a IDs.
+            name_to_id = {
+                p2.get("player", ""): p2.get("player_id", "")
+                for p2 in players
+                if p2.get("player_id") and p2.get("player")
+            }
+
+            import json as _json
 
             for p in players:
                 steam_id = p.get("player_id", "")
@@ -267,12 +238,27 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                 if time_sec <= 0:
                     continue
 
+                # Convertir most_killed/death_by de {nombre: count} a {steam_id: count}
+                # usando el lookup del mismo match. Nombres sin steam_id conocido se descartan.
+                most_killed_ids = {
+                    name_to_id[name]: count
+                    for name, count in (p.get("most_killed") or {}).items()
+                    if name in name_to_id
+                }
+                death_by_ids = {
+                    name_to_id[name]: count
+                    for name, count in (p.get("death_by") or {}).items()
+                    if name in name_to_id
+                }
+
                 await conn.execute(
                     """
                     INSERT INTO match_player_stats
                         (match_id, steam_id, player_name, kills, deaths, teamkills,
-                         combat_score, offense_score, defense_score, support_score, time_seconds)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                         combat_score, offense_score, defense_score, support_score, time_seconds,
+                         kills_by_type, deaths_by_type, weapons, death_by_weapons,
+                         most_killed, death_by, most_killed_ids, death_by_ids)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                     ON CONFLICT (match_id, steam_id) DO NOTHING
                     """,
                     match_id,
@@ -286,6 +272,14 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
                     int(p.get("defense") or 0),
                     int(p.get("support") or 0),
                     time_sec,
+                    _json.dumps(p.get("kills_by_type") or {}),
+                    _json.dumps(p.get("deaths_by_type") or {}),
+                    _json.dumps(p.get("weapons") or {}),
+                    _json.dumps(p.get("death_by_weapons") or {}),
+                    _json.dumps(p.get("most_killed") or {}),
+                    _json.dumps(p.get("death_by") or {}),
+                    _json.dumps(most_killed_ids),
+                    _json.dumps(death_by_ids),
                 )
 
                 # Mantiene actualizada la lista de jugadores conocidos
@@ -308,10 +302,6 @@ async def process_maps(pool: asyncpg.Pool, session: aiohttp.ClientSession, maps:
 
             player_count = len([p for p in players if int(p.get("time_seconds") or 0) > 0])
             log.info(f"  Nueva: [{match_id}] {map_name} — {player_count} jugadores")
-
-            await save_kill_events_for_match(
-                conn, session, match_id, m.get("start"), m.get("end")
-            )
 
             new_count += 1
 
@@ -340,25 +330,34 @@ async def fetch_metric_values(conn, metric: str, match_ids: list = None,
     filtrando por una lista explícita de match_id (partidas puntuales)
     o por rango de fechas [start_date, end_date].
     kills_weapon/kills_player necesitan 'param' (arma exacta, o steam_id
-    de la víctima) y consultan kill_events en vez de match_player_stats.
+    de la víctima) y consultan las columnas JSONB de match_player_stats.
     """
-    if metric in ("kills_weapon", "kills_player"):
+    if metric in ("kills_weapon", "kills_player", "kills_type"):
         if not param:
             return []
-        filter_col = "weapon" if metric == "kills_weapon" else "victim_id"
+        # kills_weapon: suma mps.weapons->>'ARMA'
+        # kills_player: suma mps.most_killed_ids->>'steam_id'
+        # kills_type:   suma mps.kills_by_type->>'infantry'|'armor'|etc.
+        if metric == "kills_weapon":
+            jsonb_col = "weapons"
+        elif metric == "kills_player":
+            jsonb_col = "most_killed_ids"
+        else:
+            jsonb_col = "kills_by_type"
         if match_ids is not None:
-            where_clause = f"ke.match_id = ANY($1::varchar[]) AND ke.{filter_col} = $2"
+            where_clause = "mps.match_id = ANY($1::varchar[])"
             params = [match_ids, param]
         else:
-            where_clause = f"m.start_time BETWEEN $1 AND $2 AND ke.{filter_col} = $3"
+            where_clause = "m.start_time BETWEEN $1 AND $2"
             params = [start_date, end_date, param]
         query = f"""
-            SELECT ke.killer_id AS steam_id, MAX(ke.killer_name) AS player_name,
-                   COUNT(*) AS value
-            FROM kill_events ke
+            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+                   COALESCE(SUM((mps.{jsonb_col}->>${ {True: 2, False: 3}[match_ids is not None] })::int), 0) AS value
+            FROM match_player_stats mps
             JOIN matches m USING (match_id)
             WHERE {where_clause}
-            GROUP BY ke.killer_id
+              AND mps.{jsonb_col} ? ${ {True: 2, False: 3}[match_ids is not None] }
+            GROUP BY mps.steam_id
         """
         return await conn.fetch(query, *params)
 
@@ -418,8 +417,12 @@ LIVE_METRIC_FIELD = {
 def aggregate_live_stats_by_player(live_result: dict) -> dict:
     """
     Convierte la respuesta de get_live_game_stats en un dict
-    steam_id -> {kills, deaths, combat, offense, defense, support, player_name}
+    steam_id -> {kills, deaths, combat, offense, defense, support,
+                 kills_by_type, player_name}
     para sumarlo fácilmente contra lo ya cerrado.
+    kills_by_type incluye el desglose por tipo (infantry, armor, etc.)
+    que get_live_game_stats ya provee — así kills_type funciona en vivo
+    sin necesidad de parsear logs individuales.
     """
     out = {}
     for p in (live_result or {}).get("stats", []):
@@ -427,13 +430,14 @@ def aggregate_live_stats_by_player(live_result: dict) -> dict:
         if not steam_id:
             continue
         out[steam_id] = {
-            "player_name": p.get("player", ""),
-            "kills":   int(p.get("kills") or 0),
-            "deaths":  int(p.get("deaths") or 0),
-            "combat":  int(p.get("combat") or 0),
-            "offense": int(p.get("offense") or 0),
-            "defense": int(p.get("defense") or 0),
-            "support": int(p.get("support") or 0),
+            "player_name":   p.get("player", ""),
+            "kills":         int(p.get("kills") or 0),
+            "deaths":        int(p.get("deaths") or 0),
+            "combat":        int(p.get("combat") or 0),
+            "offense":       int(p.get("offense") or 0),
+            "defense":       int(p.get("defense") or 0),
+            "support":       int(p.get("support") or 0),
+            "kills_by_type": p.get("kills_by_type") or {},
         }
     return out
 
@@ -449,9 +453,9 @@ async def compute_combined_metric_values(conn, metric: str, live_by_player: dict
     a cada jugador. Para kd_ratio, combina kills+deaths de ambas fuentes
     antes de calcular el ratio (más preciso que combinar dos ratios).
 
-    kills_weapon/kills_player: cuentan filas de kill_events (cerrado) +
-    el cursor en memoria de kills en vivo (live_kills_by_player), filtrando
-    por arma exacta (param) o por steam_id de víctima (param).
+    kills_weapon/kills_player: suman el campo JSONB correspondiente en
+    match_player_stats (cerrado) + el cursor en memoria de kills en vivo
+    (live_kills_by_player), filtrando por arma exacta o steam_id de víctima.
 
     Devuelve una lista de dicts {steam_id, player_name, value} — mismo
     formato que fetch_metric_values, para que el resto del código no
@@ -459,42 +463,59 @@ async def compute_combined_metric_values(conn, metric: str, live_by_player: dict
     """
     live_kills_by_player = live_kills_by_player or {}
 
-    if metric in ("kills_weapon", "kills_player"):
+    if metric in ("kills_weapon", "kills_player", "kills_type"):
         if not param:
-            return []  # sin arma/jugador especificado no hay nada que contar
+            return []
 
-        filter_col = "weapon" if metric == "kills_weapon" else "victim_id"
-
-        if match_ids is not None:
-            where_clause = f"ke.match_id = ANY($1::varchar[]) AND ke.{filter_col} = $2"
-            params = [match_ids, param]
+        if metric == "kills_weapon":
+            jsonb_col = "weapons"
+        elif metric == "kills_player":
+            jsonb_col = "most_killed_ids"
         else:
-            where_clause = f"m.start_time BETWEEN $1 AND $2 AND ke.{filter_col} = $3"
-            params = [start_date, end_date, param]
+            jsonb_col = "kills_by_type"
+        if match_ids is not None:
+            where_clause = "mps.match_id = ANY($1::varchar[])"
+            params_closed = [match_ids, param]
+            param_idx = 2
+        else:
+            where_clause = "m.start_time BETWEEN $1 AND $2"
+            params_closed = [start_date, end_date, param]
+            param_idx = 3
 
         closed = await conn.fetch(
             f"""
-            SELECT ke.killer_id AS steam_id, MAX(ke.killer_name) AS player_name,
-                   COUNT(*) AS value
-            FROM kill_events ke
+            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+                   COALESCE(SUM((mps.{jsonb_col}->>${ param_idx })::int), 0) AS value
+            FROM match_player_stats mps
             JOIN matches m USING (match_id)
             WHERE {where_clause}
-            GROUP BY ke.killer_id
+              AND mps.{jsonb_col} ? ${ param_idx }
+            GROUP BY mps.steam_id
             """,
-            *params
+            *params_closed
         )
         closed_by_player = {r["steam_id"]: (r["value"] or 0) for r in closed}
         names_by_player = {r["steam_id"]: r["player_name"] for r in closed}
 
-        live_field = "by_weapon" if metric == "kills_weapon" else "by_victim"
-        all_steam_ids = set(closed_by_player) | set(live_kills_by_player)
+        if metric == "kills_weapon":
+            live_field = "by_weapon"
+            live_source = live_kills_by_player   # de get_recent_logs
+        elif metric == "kills_player":
+            live_field = "by_victim"
+            live_source = live_kills_by_player   # de get_recent_logs
+        else:
+            # kills_type: get_live_game_stats ya tiene kills_by_type por jugador
+            # mucho mas preciso que inferirlo de los logs
+            live_field = "kills_by_type"
+            live_source = live_by_player          # de get_live_game_stats
+        all_steam_ids = set(closed_by_player) | set(live_source)
         results = []
         for steam_id in all_steam_ids:
-            live_value = live_kills_by_player.get(steam_id, {}).get(live_field, {}).get(param, 0)
+            live_value = live_source.get(steam_id, {}).get(live_field, {}).get(param, 0) if metric == "kills_type" else live_kills_by_player.get(steam_id, {}).get(live_field, {}).get(param, 0)
             total = closed_by_player.get(steam_id, 0) + live_value
             player_name = (
                 names_by_player.get(steam_id)
-                or live_kills_by_player.get(steam_id, {}).get("player_name")
+                or live_source.get(steam_id, {}).get("player_name")
                 or steam_id
             )
             results.append({"steam_id": steam_id, "player_name": player_name, "value": total})
@@ -657,7 +678,7 @@ async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int
         seen_keys.add(key)
 
         player_state = _live_kills_state["kills_by_player"].setdefault(
-            killer_id, {"player_name": None, "by_weapon": {}, "by_victim": {}}
+            killer_id, {"player_name": None, "by_weapon": {}, "by_victim": {}, "by_type": {}}
         )
         killer_name = ev.get("player_name_1")
         if killer_name:
@@ -665,6 +686,9 @@ async def update_live_kills_state(session: aiohttp.ClientSession, map_start: int
         if weapon:
             player_state["by_weapon"][weapon] = player_state["by_weapon"].get(weapon, 0) + 1
         player_state["by_victim"][victim_id] = player_state["by_victim"].get(victim_id, 0) + 1
+        kill_type = ev.get("kill_type") or ev.get("type_1")
+        if kill_type:
+            player_state["by_type"][kill_type] = player_state["by_type"].get(kill_type, 0) + 1
 
     return _live_kills_state["kills_by_player"]
 
@@ -730,7 +754,7 @@ async def run_live_progress_update(pool: asyncpg.Pool, session: aiohttp.ClientSe
             SELECT EXISTS (
                 SELECT 1 FROM challenge_metrics cm
                 JOIN challenges c ON c.id = cm.challenge_id
-                WHERE c.id = ANY($1::int[]) AND cm.metric IN ('kills_weapon', 'kills_player')
+                WHERE c.id = ANY($1::int[]) AND cm.metric IN ('kills_weapon', 'kills_player', 'kills_type')
             )
             """,
             [ch["id"] for ch in eligible]
@@ -1035,6 +1059,17 @@ async def main_collector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession
     partida — resolve_match_scope)."""
     while True:
         try:
+            # Identificamos la partida en curso (si hay una) para que
+            # process_maps no la guarde a medio cerrar — ver docstring de
+            # process_maps para el detalle del problema que esto evita.
+            live_map_start_epoch = None
+            try:
+                info = await fetch_public_info(session)
+                current_map = (info or {}).get("current_map") or {}
+                live_map_start_epoch = current_map.get("start")
+            except Exception as e:
+                log.warning(f"  No se pudo obtener get_public_info para detectar partida en vivo: {e}")
+
             total_new = 0
             page = 1
 
@@ -1049,7 +1084,7 @@ async def main_collector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession
                     break
 
                 log.info(f"  Página {page}: {len(maps)} partidas (total CRCON: {total})")
-                new = await process_maps(pool, session, maps)
+                new = await process_maps(pool, session, maps, live_map_start_epoch=live_map_start_epoch)
                 total_new += new
 
                 # Si ninguna partida de esta página era nueva, las siguientes
@@ -1108,60 +1143,135 @@ async def event_detector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession
         await asyncio.sleep(EVENT_DETECTOR_INTERVAL_SECONDS)
 
 
-async def backfill_kill_events(pool: asyncpg.Pool, session: aiohttp.ClientSession):
-    """
-    Recorre TODAS las partidas en 'matches' y completa kill_events para
-    las que tengan menos eventos guardados que kills en su scoreboard
-    (match_player_stats) — es decir, las afectadas por el bug donde
-    save_kill_events_for_match() no filtraba por action='KILL' en el
-    servidor y perdía datos en partidas con mucho chat/conexiones.
 
-    No toca matches ni match_player_stats — solo repuebla kill_events.
-    Se activa con la variable de entorno BACKFILL_KILL_EVENTS=true, y el
-    proceso termina al finalizar (no entra al loop normal).
+async def backfill_match_player_stats(pool: asyncpg.Pool, session: aiohttp.ClientSession):
     """
-    log.info("=== BACKFILL de kill_events iniciado ===")
+    Repuebla match_player_stats para todas las partidas que tengan las
+    columnas JSONB vacias (kills_by_type = '{}'), lo que indica que se
+    guardaron antes de que se agregaran esos campos. Re-pide
+    get_map_scoreboard y reemplaza la fila entera con los datos completos.
+    Se activa con BACKFILL_MATCH_STATS=true.
+    """
+    log.info("=== BACKFILL de match_player_stats iniciado ===")
 
     async with pool.acquire() as conn:
-        matches_a_revisar = await conn.fetch(
+        candidatas = await conn.fetch(
             """
-            SELECT m.match_id, m.start_time, m.end_time,
-                   SUM(mps.kills) AS kills_esperados,
-                   COUNT(ke.id) AS kill_events_actuales
-            FROM matches m
-            JOIN match_player_stats mps ON mps.match_id = m.match_id
-            LEFT JOIN kill_events ke ON ke.match_id = m.match_id
-            GROUP BY m.match_id, m.start_time, m.end_time
-            HAVING SUM(mps.kills) > COUNT(ke.id)
-            ORDER BY m.start_time ASC
+            SELECT DISTINCT match_id
+            FROM match_player_stats
+            WHERE kills_by_type = '{}'::jsonb
+               OR kills_by_type IS NULL
+            ORDER BY match_id::int ASC
             """
         )
 
-    total = len(matches_a_revisar)
-    log.info(f"  {total} partida(s) incompleta(s) detectada(s), reprocesando...")
+    total = len(candidatas)
+    log.info(f"  {total} partida(s) con scoreboard sospechoso, reprocesando...")
 
-    procesadas = 0
-    for row in matches_a_revisar:
+    actualizadas = 0
+    fallidas = []
+
+    for row in candidatas:
         match_id = row["match_id"]
-        start_time = row["start_time"]
-        end_time = row["end_time"]
+        try:
+            detail = await fetch_map_scoreboard(session, int(match_id))
+            players = detail.get("player_stats") or []
+        except Exception as e:
+            log.warning(f"  No se pudo obtener get_map_scoreboard({match_id}): {e}")
+            fallidas.append(match_id)
+            await asyncio.sleep(0.3)
+            continue
+
+        if not players:
+            log.warning(f"  get_map_scoreboard({match_id}) devolvió vacío, se deja como está.")
+            fallidas.append(match_id)
+            await asyncio.sleep(0.3)
+            continue
 
         async with pool.acquire() as conn:
-            # Borramos lo parcial que hubiera para esta partida, para no
-            # mezclar datos viejos incompletos con los nuevos completos.
-            await conn.execute("DELETE FROM kill_events WHERE match_id = $1", match_id)
+            await conn.execute("DELETE FROM match_player_stats WHERE match_id = $1", match_id)
 
-            start_iso = start_time.isoformat() if start_time else None
-            end_iso = end_time.isoformat() if end_time else None
-            await save_kill_events_for_match(conn, session, match_id, start_iso, end_iso)
+            for p in players:
+                steam_id = p.get("player_id", "")
+                if not steam_id:
+                    continue
+                time_sec = int(p.get("time_seconds") or 0)
+                if time_sec <= 0:
+                    continue
 
-        procesadas += 1
-        if procesadas % 50 == 0 or procesadas == total:
-            log.info(f"  Backfill: {procesadas}/{total} partidas reprocesadas")
+                import json as _json
+                name_to_id_b = {
+                    p2.get("player", ""): p2.get("player_id", "")
+                    for p2 in players
+                    if p2.get("player_id") and p2.get("player")
+                }
+                most_killed_ids = {
+                    name_to_id_b[name]: count
+                    for name, count in (p.get("most_killed") or {}).items()
+                    if name in name_to_id_b
+                }
+                death_by_ids = {
+                    name_to_id_b[name]: count
+                    for name, count in (p.get("death_by") or {}).items()
+                    if name in name_to_id_b
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO match_player_stats
+                        (match_id, steam_id, player_name, kills, deaths, teamkills,
+                         combat_score, offense_score, defense_score, support_score, time_seconds,
+                         kills_by_type, deaths_by_type, weapons, death_by_weapons,
+                         most_killed, death_by, most_killed_ids, death_by_ids)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                    ON CONFLICT (match_id, steam_id) DO UPDATE SET
+                        player_name=EXCLUDED.player_name, kills=EXCLUDED.kills,
+                        deaths=EXCLUDED.deaths, teamkills=EXCLUDED.teamkills,
+                        combat_score=EXCLUDED.combat_score, offense_score=EXCLUDED.offense_score,
+                        defense_score=EXCLUDED.defense_score, support_score=EXCLUDED.support_score,
+                        time_seconds=EXCLUDED.time_seconds,
+                        kills_by_type=EXCLUDED.kills_by_type,
+                        deaths_by_type=EXCLUDED.deaths_by_type,
+                        weapons=EXCLUDED.weapons,
+                        death_by_weapons=EXCLUDED.death_by_weapons,
+                        most_killed=EXCLUDED.most_killed,
+                        death_by=EXCLUDED.death_by,
+                        most_killed_ids=EXCLUDED.most_killed_ids,
+                        death_by_ids=EXCLUDED.death_by_ids
+                    """,
+                    match_id,
+                    steam_id,
+                    p.get("player", ""),
+                    int(p.get("kills") or 0),
+                    int(p.get("deaths") or 0),
+                    int(p.get("teamkills") or 0),
+                    int(p.get("combat") or 0),
+                    int(p.get("offense") or 0),
+                    int(p.get("defense") or 0),
+                    int(p.get("support") or 0),
+                    time_sec,
+                    _json.dumps(p.get("kills_by_type") or {}),
+                    _json.dumps(p.get("deaths_by_type") or {}),
+                    _json.dumps(p.get("weapons") or {}),
+                    _json.dumps(p.get("death_by_weapons") or {}),
+                    _json.dumps(p.get("most_killed") or {}),
+                    _json.dumps(p.get("death_by") or {}),
+                    _json.dumps(most_killed_ids),
+                    _json.dumps(death_by_ids),
+                )
+
+        actualizadas += 1
+        if actualizadas % 25 == 0 or actualizadas == total:
+            log.info(f"  Backfill match_player_stats: {actualizadas}/{total} partidas reprocesadas")
 
         await asyncio.sleep(0.3)  # no saturar CRCON
 
-    log.info("=== BACKFILL de kill_events completado ===")
+    log.info(
+        f"=== BACKFILL de match_player_stats completado: {actualizadas} partidas actualizadas ==="
+    )
+    if fallidas:
+        log.warning(
+            f"  {len(fallidas)} partida(s) no se pudieron actualizar: {fallidas}"
+        )
 
 
 async def run():
@@ -1169,8 +1279,8 @@ async def run():
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=3)
 
     async with aiohttp.ClientSession(headers=HEADERS) as session:
-        if BACKFILL_KILL_EVENTS:
-            await backfill_kill_events(pool, session)
+        if BACKFILL_MATCH_STATS:
+            await backfill_match_player_stats(pool, session)
             log.info("Backfill terminado, el proceso va a salir ahora.")
             return
 

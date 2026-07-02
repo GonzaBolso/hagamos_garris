@@ -43,32 +43,31 @@ CREATE TABLE IF NOT EXISTS match_player_stats (
     defense_score   INT DEFAULT 0,
     support_score   INT DEFAULT 0,
     time_seconds    INT DEFAULT 0,
+    -- Breakdowns de kills/deaths por tipo y por arma (de get_map_scoreboard)
+    kills_by_type       JSONB DEFAULT '{}',   -- {"infantry":5,"armor":2,...}
+    deaths_by_type      JSONB DEFAULT '{}',   -- {"infantry":3,"sniper":1,...}
+    weapons             JSONB DEFAULT '{}',   -- {"M1 GARAND":36,"M1A1 THOMPSON":24}
+    death_by_weapons    JSONB DEFAULT '{}',   -- {"GEWEHR 43":5,"KARABINER 98K":3}
+    most_killed         JSONB DEFAULT '{}',   -- {"Guaiko":3,"NahuO1":1}
+    death_by            JSONB DEFAULT '{}',   -- {"Wolf-77":2,"timy.co":4}
+    most_killed_ids     JSONB DEFAULT '{}',   -- {"76561198..":3} -- steam_id de victimas
+    death_by_ids        JSONB DEFAULT '{}',   -- {"76561198..":2} -- steam_id de asesinos
     UNIQUE (match_id, steam_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_mps_steam ON match_player_stats (steam_id);
 CREATE INDEX IF NOT EXISTS idx_mps_match ON match_player_stats (match_id);
 
--- ── Kills individuales con arma (un kill por fila) ────────────
--- Se llena cuando el collector cierra cada partida, consultando
--- get_historical_logs acotado al rango de esa partida. Excluye TEAM
--- KILL. Se usa para desafíos tipo 'kills_weapon'/'kills_player' y para
--- el Top de armas en /stats show.
-CREATE TABLE IF NOT EXISTS kill_events (
-    id          SERIAL PRIMARY KEY,
-    match_id    VARCHAR(64) REFERENCES matches(match_id) ON DELETE CASCADE,
-    event_time  TIMESTAMPTZ,
-    killer_id   VARCHAR(64) NOT NULL,
-    killer_name VARCHAR(100),
-    victim_id   VARCHAR(64) NOT NULL,
-    victim_name VARCHAR(100),
-    weapon      VARCHAR(150)
-);
+-- Migracion para bases existentes: agregar columnas JSONB si no existen
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS kills_by_type    JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS deaths_by_type   JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS weapons          JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by_weapons JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS most_killed      JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by         JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS most_killed_ids  JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by_ids     JSONB DEFAULT '{}';
 
-CREATE INDEX IF NOT EXISTS idx_kill_events_match ON kill_events (match_id);
-CREATE INDEX IF NOT EXISTS idx_kill_events_killer ON kill_events (killer_id);
-CREATE INDEX IF NOT EXISTS idx_kill_events_killer_weapon ON kill_events (killer_id, weapon);
-CREATE INDEX IF NOT EXISTS idx_kill_events_killer_victim ON kill_events (killer_id, victim_id);
 
 -- ── Vista: stats acumulados por jugador (para /hll top) ───────
 CREATE OR REPLACE VIEW player_totals AS
