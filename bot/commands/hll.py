@@ -571,7 +571,42 @@ def setup_hll(bot: commands.Bot, pool):
         embed.set_footer(text="📊 Stats históricos acumulados")
         await interaction.followup.send(embed=embed)
 
-    # ── /hlladmin snapshot ──────────────────────────────────────
+    # ── /hlladmin armas ────────────────────────────────────────────
+    @admin_group.command(name="armas", description="Lista todas las armas con kills registrados y sus totales")
+    async def armas(interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT key AS weapon, SUM(value::int) AS total_kills
+                FROM match_player_stats,
+                     jsonb_each_text(weapons) AS t(key, value)
+                GROUP BY key
+                ORDER BY total_kills DESC
+                """
+            )
+
+        if not rows:
+            await interaction.followup.send("No hay kills registrados todavía.")
+            return
+
+        # Agrupar en chunks de 30 para no superar el límite de Discord
+        chunk_size = 30
+        chunks = [rows[i:i+chunk_size] for i in range(0, len(rows), chunk_size)]
+
+        for idx, chunk in enumerate(chunks):
+            lines = [f"`{r['weapon']}` — {r['total_kills']} kills" for r in chunk]
+            embed = discord.Embed(
+                title=f"🔫 Armas registradas ({len(rows)} total)" if idx == 0 else "🔫 Armas (cont.)",
+                description="\n".join(lines),
+                color=0xE67E22
+            )
+            if idx == 0:
+                embed.set_footer(text="Usá el nombre exacto en metricas:kills_weapon:NOMBRE:10")
+            await interaction.followup.send(embed=embed)
+
+
     @admin_group.command(name="snapshot", description="Manda el resumen de Top 10 de un período (hoy, o una fecha puntual)")
     @app_commands.describe(
         periodo="Qué resumen mandar: día, semana o mes",

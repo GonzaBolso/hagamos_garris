@@ -88,10 +88,19 @@ class HLLBot(commands.Bot):
                 name="Hell Let Loose 🪖"
             )
         )
-        await self._send_status("🟢 **Bot conectado** y listo.")
+        await self._send_status("🟢 **Bot conectado**.")
 
     async def _send_status(self, message: str):
-        """Manda un mensaje al canal de status si está configurado."""
+        """Manda un mensaje al canal de status via webhook (confiable en
+        on_ready y close) o via canal si no hay webhook configurado."""
+        if config.STATUS_WEBHOOK_URL:
+            try:
+                import aiohttp as _aiohttp
+                async with _aiohttp.ClientSession() as _s:
+                    await _s.post(config.STATUS_WEBHOOK_URL, json={"content": message})
+                return
+            except Exception as e:
+                log.warning(f"Webhook de status falló: {e}")
         if not config.STATUS_CHANNEL_ID:
             return
         try:
@@ -101,7 +110,6 @@ class HLLBot(commands.Bot):
             log.warning(f"No pude mandar mensaje de status: {e}")
 
     async def close(self):
-        await self._send_status("🔴 **Bot desconectado**.")
         if hasattr(self, "snapshot_loop"):
             self.snapshot_loop.cancel()
         if hasattr(self, "challenge_close_loop"):
@@ -120,5 +128,27 @@ async def main():
         await bot.start(config.DISCORD_TOKEN)
 
 
+def _send_disconnect_sync():
+    if not config.STATUS_WEBHOOK_URL:
+        return
+    try:
+        import requests
+        requests.post(
+            config.STATUS_WEBHOOK_URL,
+            json={"content": "🔴 **Bot desconectado**."},
+            timeout=3,
+        )
+    except Exception as e:
+        log.warning(f"Webhook desconexión falló: {e} — URL: {config.STATUS_WEBHOOK_URL[:50]}...")
+
+
+def _sigterm_handler(signum, frame):
+    log.info("SIGTERM recibido, mandando webhook de desconexión...")
+    _send_disconnect_sync()
+    raise SystemExit(0)
+
+
 if __name__ == "__main__":
+    import signal
+    signal.signal(signal.SIGTERM, _sigterm_handler)
     asyncio.run(main())

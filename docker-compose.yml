@@ -27,7 +27,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      CRCON_URL: ${CRCON_URL}              # 8010 con auth (necesario para get_historical_logs)
+      CRCON_URL: ${CRCON_URL}
       CRCON_API_KEY: ${CRCON_API_KEY}
       DB_HOST: postgres
       DB_PORT: 5432
@@ -35,8 +35,8 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       COLLECT_INTERVAL_MINUTES: ${COLLECT_INTERVAL_MINUTES:-30}
-      BACKFILL_KILL_EVENTS: ${BACKFILL_KILL_EVENTS:-false}
       BACKFILL_MATCH_STATS: ${BACKFILL_MATCH_STATS:-false}
+      STATUS_WEBHOOK_URL: ${STATUS_WEBHOOK_URL:-}
       TZ: ${TZ:-America/Argentina/Buenos_Aires}
 
   bot:
@@ -49,13 +49,15 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       GUILD_ID: ${GUILD_ID}
-      CRCON_URL: ${CRCON_URL}              # 8010 con auth
+      CRCON_URL: ${CRCON_URL}
       CRCON_API_KEY: ${CRCON_API_KEY}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
+      STATUS_CHANNEL_ID: ${STATUS_CHANNEL_ID:-}
+      STATUS_WEBHOOK_URL: ${STATUS_WEBHOOK_URL:-}
       TZ: ${TZ:-America/Argentina/Buenos_Aires}
 
 volumes:

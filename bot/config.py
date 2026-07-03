@@ -14,3 +14,6 @@ DB_DSN = (
 # Canal de Discord donde se mandan mensajes de estado del bot (opcional)
 _status = os.environ.get("STATUS_CHANNEL_ID", "")
 STATUS_CHANNEL_ID = int(_status) if _status.strip().isdigit() else None
+
+# Webhook del mismo canal de status (más confiable que get_channel en on_ready/close)
+STATUS_WEBHOOK_URL = os.environ.get("STATUS_WEBHOOK_URL", "")
