@@ -66,9 +66,11 @@ async def update_vinculados_message(bot, pool, guild_id: int):
 
         rows = await conn.fetch(
             """
-            SELECT discord_id, discord_name, steam_id, linked_at
-            FROM linked_players
-            ORDER BY linked_at DESC
+            SELECT lp.discord_id, lp.discord_name, lp.steam_id, lp.linked_at,
+                   p.player_name AS steam_name
+            FROM linked_players lp
+            LEFT JOIN players p ON p.steam_id = lp.steam_id
+            ORDER BY lp.linked_at DESC
             """
         )
 
@@ -80,11 +82,13 @@ async def update_vinculados_message(bot, pool, guild_id: int):
             return
 
     if rows:
-        lines = [
-            f"`{r['discord_name'] or '?'}` — `{r['steam_id']}` "
-            f"_(vinculado {format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
-            for r in rows
-        ]
+        lines = []
+        for r in rows:
+            steam_display = f"{r['steam_name']} " if r['steam_name'] else ""
+            lines.append(
+                f"`{r['discord_name'] or '?'}` — {steam_display}`{r['steam_id']}` "
+                f"_(vinculado {format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
+            )
         description = "\n".join(lines)
     else:
         description = "_Todavía no hay nadie vinculado._"
@@ -685,7 +689,6 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hlladmin setchannel #canal",        value="Configura el canal para jugadores y/o snapshots", inline=False)
         embed.add_field(name="/hlladmin setroles @admin @player",  value="Configura los roles", inline=False)
         embed.add_field(name="/hlladmin config",                   value="Muestra la configuración actual", inline=False)
-        embed.add_field(name="/hlladmin armas",                    value="Manda un .txt con el nombre de las armas", inline=False)
         embed.add_field(name="/hlladmin desafio metricas",         value="Lista las métricas disponibles para crear desafíos", inline=False)
         embed.add_field(name="/hlladmin desafio crear",            value="Crea un desafío configurable", inline=False)
         embed.add_field(name="/hlladmin desafio eliminar <id>",    value="Desactiva un desafío", inline=False)
