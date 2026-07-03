@@ -574,7 +574,7 @@ def setup_hll(bot: commands.Bot, pool):
     # ── /hlladmin armas ────────────────────────────────────────────
     @admin_group.command(name="armas", description="Lista todas las armas con kills registrados y sus totales")
     async def armas(interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -588,23 +588,22 @@ def setup_hll(bot: commands.Bot, pool):
             )
 
         if not rows:
-            await interaction.followup.send("No hay kills registrados todavía.")
+            await interaction.followup.send("No hay kills registrados todavía.", ephemeral=True)
             return
 
-        # Agrupar en chunks de 30 para no superar el límite de Discord
-        chunk_size = 30
-        chunks = [rows[i:i+chunk_size] for i in range(0, len(rows), chunk_size)]
+        lines = [f"{r['weapon']} ({r['total_kills']} kills)" for r in rows]
+        content = "\n".join(lines)
 
-        for idx, chunk in enumerate(chunks):
-            lines = [f"`{r['weapon']}` — {r['total_kills']} kills" for r in chunk]
-            embed = discord.Embed(
-                title=f"🔫 Armas registradas ({len(rows)} total)" if idx == 0 else "🔫 Armas (cont.)",
-                description="\n".join(lines),
-                color=0xE67E22
-            )
-            if idx == 0:
-                embed.set_footer(text="Usá el nombre exacto en metricas:kills_weapon:NOMBRE:10")
-            await interaction.followup.send(embed=embed)
+        import io
+        file = discord.File(
+            fp=io.BytesIO(content.encode()),
+            filename="armas.txt"
+        )
+        await interaction.followup.send(
+            f"🔫 {len(rows)} armas registradas. Usá el nombre exacto en `kills_weapon:NOMBRE:10`.",
+            file=file,
+            ephemeral=True
+        )
 
 
     @admin_group.command(name="snapshot", description="Manda el resumen de Top 10 de un período (hoy, o una fecha puntual)")
@@ -686,6 +685,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hlladmin setchannel #canal",        value="Configura el canal para jugadores y/o snapshots", inline=False)
         embed.add_field(name="/hlladmin setroles @admin @player",  value="Configura los roles", inline=False)
         embed.add_field(name="/hlladmin config",                   value="Muestra la configuración actual", inline=False)
+        embed.add_field(name="/hlladmin armas",                    value="Manda un .txt con el nombre de las armas", inline=False)
         embed.add_field(name="/hlladmin desafio metricas",         value="Lista las métricas disponibles para crear desafíos", inline=False)
         embed.add_field(name="/hlladmin desafio crear",            value="Crea un desafío configurable", inline=False)
         embed.add_field(name="/hlladmin desafio eliminar <id>",    value="Desactiva un desafío", inline=False)
