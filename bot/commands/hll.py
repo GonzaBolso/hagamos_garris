@@ -28,7 +28,6 @@ def setup_hll(bot: commands.Bot, pool):
     admin_group = app_commands.Group(
         name="hlladmin",
         description="Comandos de administración del bot HLL",
-        default_members=discord.Permissions(administrator=True),
     )
 
     # ── /hlladmin setchannel ───────────────────────────────────
@@ -38,7 +37,8 @@ def setup_hll(bot: commands.Bot, pool):
         canal_snapshots="Canal para los Top diarios/semanales/mensuales automáticos (opcional)",
         canal_desafios="Canal donde se manda el cierre de desafíos (opcional)",
         canal_vinculados="Canal privado con la lista de cuentas vinculadas (opcional)",
-        canal_eventos="Canal para eventos destacados en vivo (opcional)"
+        canal_eventos="Canal para eventos destacados en vivo (opcional)",
+        canal_status="Canal con panel de estado del servidor actualizado automáticamente (opcional)"
     )
     @admin_only()
     async def setchannel(interaction: discord.Interaction,
@@ -46,7 +46,8 @@ def setup_hll(bot: commands.Bot, pool):
                           canal_snapshots: discord.TextChannel = None,
                           canal_desafios: discord.TextChannel = None,
                           canal_vinculados: discord.TextChannel = None,
-                          canal_eventos: discord.TextChannel = None):
+                          canal_eventos: discord.TextChannel = None,
+                          canal_status: discord.TextChannel = None):
         async with pool.acquire() as conn:
             await db_guild.upsert_channels(
                 conn, interaction.guild_id, canal.id,
@@ -54,6 +55,7 @@ def setup_hll(bot: commands.Bot, pool):
                 canal_desafios.id  if canal_desafios  else None,
                 canal_vinculados.id if canal_vinculados else None,
                 canal_eventos.id   if canal_eventos    else None,
+                canal_status.id    if canal_status     else None,
             )
 
         msg = f"✅ Canal de jugadores configurado: {canal.mention}"
@@ -61,6 +63,7 @@ def setup_hll(bot: commands.Bot, pool):
         if canal_desafios:   msg += f"\n✅ Canal de desafíos: {canal_desafios.mention}"
         if canal_vinculados: msg += f"\n✅ Canal de vinculados: {canal_vinculados.mention}"
         if canal_eventos:    msg += f"\n✅ Canal de eventos: {canal_eventos.mention}"
+        if canal_status:     msg += f"\n✅ Canal de estado del servidor: {canal_status.mention}"
         await interaction.response.send_message(msg, ephemeral=True)
 
         if canal_vinculados:

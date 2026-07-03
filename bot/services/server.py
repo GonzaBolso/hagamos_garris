@@ -63,3 +63,49 @@ def build_perfil_data(data: dict) -> dict:
         "country":     steam_info.get("country"),
         "vac_banned":  bans.get("VACBanned", False),
     }
+
+
+def build_server_status_embed(state: dict, slots: dict, players: list) -> "discord.Embed":
+    """
+    Embed combinado de estado del servidor + jugadores online.
+    Se usa para el panel que se edita en lugar cada 60s.
+    """
+    import discord
+    from datetime import datetime, timezone
+
+    s = build_server_state(state, slots)
+    total = s["allied"] + s["axis"]
+
+    embed = discord.Embed(
+        title="🖥️ Estado del Servidor",
+        color=0x57F287 if total > 0 else 0x99AAB5,
+    )
+    embed.add_field(name="🗺️ Mapa actual",     value=s["current_map"], inline=False)
+    embed.add_field(name="⏭️ Próximo mapa",    value=s["next_map"],    inline=False)
+    embed.add_field(name="⏱️ Tiempo restante", value=s["time_rem"],    inline=False)
+    embed.add_field(
+        name="👥 Jugadores",
+        value=f"{total}/{s['max_players']} — Aliados: {s['allied']} | Eje: {s['axis']}",
+        inline=True,
+    )
+    embed.add_field(
+        name="🏆 Score",
+        value=f"Aliados {s['score_allied']} — {s['score_axis']} Eje",
+        inline=True,
+    )
+
+    if players:
+        names = [p.get("name", "?") for p in players[:30]]
+        embed.add_field(
+            name=f"🟢 Conectados ({len(players)})",
+            value=", ".join(names) + ("..." if len(players) > 30 else ""),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="🔴 Sin jugadores", value="El servidor está vacío.", inline=False)
+
+    # Timestamp de Discord — se muestra en la hora local del usuario
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    embed.set_footer(text=f"Actualizado: <t:{now_ts}:R>")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed

@@ -38,27 +38,31 @@ async def set_vinculados_message_id(conn: asyncpg.Connection,
 
 
 async def upsert_channels(conn: asyncpg.Connection, guild_id: int,
-                           stats_channel_id: int,
-                           snapshot_channel_id: int | None,
-                           challenge_channel_id: int | None,
-                           vinculados_channel_id: int | None,
-                           eventos_channel_id: int | None) -> None:
+                           stats_channel_id: int | None = None,
+                           snapshot_channel_id: int | None = None,
+                           challenge_channel_id: int | None = None,
+                           vinculados_channel_id: int | None = None,
+                           eventos_channel_id: int | None = None,
+                           server_status_channel_id: int | None = None) -> None:
     await conn.execute(
         """
         INSERT INTO guild_config
             (guild_id, stats_channel_id, snapshot_channel_id,
-             challenge_channel_id, vinculados_channel_id, eventos_channel_id)
-        VALUES ($1, $2, $3, $4, $5, $6)
+             challenge_channel_id, vinculados_channel_id, eventos_channel_id,
+             server_status_channel_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (guild_id) DO UPDATE
-            SET stats_channel_id      = $2,
-                snapshot_channel_id   = COALESCE($3, guild_config.snapshot_channel_id),
-                challenge_channel_id  = COALESCE($4, guild_config.challenge_channel_id),
-                vinculados_channel_id = COALESCE($5, guild_config.vinculados_channel_id),
-                eventos_channel_id    = COALESCE($6, guild_config.eventos_channel_id),
-                updated_at            = NOW()
+            SET stats_channel_id         = COALESCE($2, guild_config.stats_channel_id),
+                snapshot_channel_id      = COALESCE($3, guild_config.snapshot_channel_id),
+                challenge_channel_id     = COALESCE($4, guild_config.challenge_channel_id),
+                vinculados_channel_id    = COALESCE($5, guild_config.vinculados_channel_id),
+                eventos_channel_id       = COALESCE($6, guild_config.eventos_channel_id),
+                server_status_channel_id = COALESCE($7, guild_config.server_status_channel_id),
+                updated_at               = NOW()
         """,
         guild_id, stats_channel_id, snapshot_channel_id,
         challenge_channel_id, vinculados_channel_id, eventos_channel_id,
+        server_status_channel_id,
     )
 
 
@@ -101,4 +105,26 @@ async def link_player(conn: asyncpg.Connection, discord_id: int,
             SET steam_id = $2, discord_name = $3, linked_at = NOW()
         """,
         discord_id, steam_id, discord_name,
+    )
+
+
+async def get_server_status_config(conn: asyncpg.Connection, guild_id: int):
+    return await conn.fetchrow(
+        "SELECT server_status_channel_id, server_status_message_id FROM guild_config WHERE guild_id = $1",
+        guild_id,
+    )
+
+
+async def set_server_status_message_id(conn: asyncpg.Connection,
+                                        guild_id: int, message_id: int) -> None:
+    await conn.execute(
+        "UPDATE guild_config SET server_status_message_id = $1 WHERE guild_id = $2",
+        message_id, guild_id,
+    )
+
+
+async def get_all_server_status_configs(conn: asyncpg.Connection) -> list:
+    """Devuelve todos los guilds que tienen canal de status configurado."""
+    return await conn.fetch(
+        "SELECT guild_id, server_status_channel_id, server_status_message_id FROM guild_config WHERE server_status_channel_id IS NOT NULL"
     )

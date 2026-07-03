@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     vinculados_channel_id   BIGINT,             -- canal privado con la lista de vinculados Discord<->Steam
     vinculados_message_id   BIGINT,             -- mensaje fijo que se edita con la lista, en ese canal
     eventos_channel_id      BIGINT,             -- canal de eventos destacados en vivo (fakeos con melee, etc.)
+    server_status_channel_id BIGINT,            -- canal con el panel de estado del servidor (se edita en lugar)
+    server_status_message_id BIGINT,            -- ID del mensaje del panel (para editarlo)
     log_channel_id          BIGINT,
     admin_role_id           BIGINT,
     mod_role_id             BIGINT,
