@@ -56,6 +56,8 @@ class HLLBot(commands.Bot):
             if isinstance(error, discord.app_commands.CheckFailure):
                 return  # los checks ya enviaron su propio mensaje
             log.error(f"Error en comando: {error}", exc_info=error)
+            cmd = getattr(interaction.command, "name", "?")
+            await self._send_status(f"⚠️ **Error en bot** (comando `/{cmd}`)\n```{type(error).__name__}: {error}```")
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message("❌ Ocurrió un error inesperado.", ephemeral=True)

@@ -72,5 +72,6 @@ def setup_event_notifier_task(bot, pool):
             await _notify_pending_events(bot, pool)
         except Exception as e:
             log.error(f"Error en event_notifier_loop: {e}", exc_info=True)
+            await bot._send_status(f"⚠️ **Error en bot** (event notifier loop)\n```{type(e).__name__}: {e}```")
 
     return event_notifier_loop

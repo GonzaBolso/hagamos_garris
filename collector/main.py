@@ -25,6 +25,9 @@ CRCON_API_KEY = os.environ.get("CRCON_API_KEY", "")   # opcional en el 7010
 INTERVAL      = int(os.environ.get("COLLECT_INTERVAL_MINUTES", 30)) * 60
 BACKFILL_MATCH_STATS = os.environ.get("BACKFILL_MATCH_STATS", "").lower() in ("1", "true", "yes")
 
+# Webhook del canal de status de Discord (opcional)
+STATUS_WEBHOOK_URL = os.environ.get("STATUS_WEBHOOK_URL", "")
+
 DB_DSN = (
     f"postgresql://{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
     f"@{os.environ['DB_HOST']}:{os.environ['DB_PORT']}/{os.environ['DB_NAME']}"
@@ -34,6 +37,22 @@ DB_DSN = (
 HEADERS = {"Content-Type": "application/json"}
 if CRCON_API_KEY:
     HEADERS["Authorization"] = f"Bearer {CRCON_API_KEY}"
+
+
+async def send_webhook(session: aiohttp.ClientSession, message: str):
+    """Manda un mensaje al canal de status via webhook. No falla si no está configurado."""
+    if not STATUS_WEBHOOK_URL:
+        return
+    try:
+        async with session.post(
+            STATUS_WEBHOOK_URL,
+            json={"content": message},
+            headers={"Content-Type": "application/json"},
+        ) as resp:
+            if resp.status not in (200, 204):
+                log.warning(f"Webhook respondió {resp.status}")
+    except Exception as e:
+        log.warning(f"No se pudo mandar webhook: {e}")
 
 
 def parse_dt(s):
@@ -1108,6 +1127,7 @@ async def main_collector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession
 
         except Exception as e:
             log.error(f"Error en ciclo: {e}", exc_info=True)
+            await send_webhook(session, f"⚠️ **Error en collector** (ciclo principal)\n```{type(e).__name__}: {e}```")
 
         log.info(f"Próxima ejecución en {INTERVAL // 60} minutos")
         await asyncio.sleep(INTERVAL)
@@ -1125,6 +1145,7 @@ async def live_polling_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession):
             await run_live_progress_update(pool, session)
         except Exception as e:
             log.error(f"Error en live_polling_loop: {e}", exc_info=True)
+            await send_webhook(session, f"⚠️ **Error en collector** (live polling)\n```{type(e).__name__}: {e}```")
 
         await asyncio.sleep(LIVE_POLL_INTERVAL_SECONDS)
 
@@ -1141,6 +1162,7 @@ async def event_detector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession
             await detect_and_notify_events(pool, session)
         except Exception as e:
             log.error(f"Error en event_detector_loop: {e}", exc_info=True)
+            await send_webhook(session, f"⚠️ **Error en collector** (detector de eventos)\n```{type(e).__name__}: {e}```")
 
         await asyncio.sleep(EVENT_DETECTOR_INTERVAL_SECONDS)
 

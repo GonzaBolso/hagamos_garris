@@ -197,6 +197,7 @@ def setup_snapshot_task(bot, pool, crcon_client):
             await run_snapshots_for_all_guilds(bot, pool, now_uy)
         except Exception as e:
             log.error(f"Error en snapshot_loop: {e}", exc_info=True)
+            await bot._send_status(f"⚠️ **Error en bot** (snapshot loop)\n```{type(e).__name__}: {e}```")
         last_fired_date["value"] = today
         wait_state["baseline_start"] = None
         wait_state["started_at"] = None
