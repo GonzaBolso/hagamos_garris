@@ -372,13 +372,14 @@ async def fetch_metric_values(conn, metric: str, match_ids: list = None,
             params = [start_date, end_date, param]
             param_n = 3
         query = f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    COALESCE(SUM((mps.{jsonb_col}->>${param_n})::int), 0) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
               AND mps.{jsonb_col} ? ${param_n}
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
         """
         return await conn.fetch(query, *params)
 
@@ -393,32 +394,35 @@ async def fetch_metric_values(conn, metric: str, match_ids: list = None,
 
     if metric == "matches":
         query = f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    COUNT(DISTINCT mps.match_id) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
         """
     elif metric == "kd_ratio":
         query = f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    CASE WHEN SUM(mps.deaths) = 0 THEN SUM(mps.kills)::FLOAT
                         ELSE ROUND((SUM(mps.kills)::NUMERIC / SUM(mps.deaths)), 2)
                    END AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
         """
     else:
         query = f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    SUM(mps.{col}) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
         """
 
     return await conn.fetch(query, *params)
@@ -505,13 +509,14 @@ async def compute_combined_metric_values(conn, metric: str, live_by_player: dict
 
         closed = await conn.fetch(
             f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    COALESCE(SUM((mps.{jsonb_col}->>${ param_idx })::int), 0) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
               AND mps.{jsonb_col} ? ${ param_idx }
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
             """,
             *params_closed
         )
@@ -558,12 +563,13 @@ async def compute_combined_metric_values(conn, metric: str, live_by_player: dict
             params = [start_date, end_date]
         closed_deaths = await conn.fetch(
             f"""
-            SELECT mps.steam_id, MAX(mps.player_name) AS player_name,
+            SELECT mps.steam_id, COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
                    SUM(mps.{col}) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
-            GROUP BY mps.steam_id
+            GROUP BY mps.steam_id, p.player_name
             """,
             *params
         )

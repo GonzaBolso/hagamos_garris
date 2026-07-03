@@ -91,12 +91,14 @@ async def get_top_killers_by_weapon(pool, weapon: str, limit: int = 10) -> list:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT steam_id, MAX(player_name) AS player_name,
-                   SUM((weapons->>$1)::int) AS kills,
+            SELECT mps.steam_id,
+                   COALESCE(p.player_name, MAX(mps.player_name)) AS player_name,
+                   SUM((mps.weapons->>$1)::int) AS kills,
                    COUNT(*) AS matches
-            FROM match_player_stats
-            WHERE weapons ? $1
-            GROUP BY steam_id
+            FROM match_player_stats mps
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
+            WHERE mps.weapons ? $1
+            GROUP BY mps.steam_id, p.player_name
             ORDER BY kills DESC
             LIMIT $2
             """,
@@ -280,7 +282,7 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int,
             f"""
             SELECT
                 mps.steam_id,
-                MAX(mps.player_name)                                AS last_name,
+                COALESCE(p.player_name, MAX(mps.player_name))      AS last_name,
                 COUNT(DISTINCT mps.match_id)                        AS matches_played,
                 SUM(mps.kills)                                      AS total_kills,
                 SUM(mps.deaths)                                     AS total_deaths,
@@ -295,6 +297,7 @@ async def fetch_leaderboard(pool, col: str, period_value: str, limit: int,
                 SUM(mps.time_seconds)                                AS total_time_seconds
             FROM match_player_stats mps
             JOIN matches m ON m.match_id = mps.match_id
+            LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE m.start_time >= $2 AND m.start_time < $3
             GROUP BY mps.steam_id
             ORDER BY {col} DESC NULLS LAST
