@@ -8,6 +8,7 @@ Soporta:
   - Períodos: diario, semanal, personalizado, partida actual, próxima partida
 """
 import re
+import logging
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -16,6 +17,8 @@ from discord import app_commands
 from checks import admin_only, player_or_admin
 from timeutils import format_local
 from leaderboards import TZ_UY, HLL_WEAPONS
+
+log = logging.getLogger(__name__)
 
 
 METRIC_LABELS = {
@@ -146,7 +149,7 @@ async def format_metrics_line(pool, metrics: list) -> str:
             parts.append(f"{label} ({param}) ≥ {float(target):g}")
         else:
             parts.append(f"{label} ≥ {float(target):g}")
-    return " **Y** ".join(parts)
+    return "\n".join(parts)
 
 
 def format_vence(r) -> str:
@@ -495,12 +498,45 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             )
 
         await interaction.followup.send(
-            f"✅ Desafío **#{challenge_id} — {nombre}** creado.\n"
-            f"Condición: {metrics_line}\n"
-            f"{comienza_txt}"
-            f"Período: {PERIOD_LABELS[periodo.value]} • Vence: {vence_txt}",
+            f"✅ Desafío **#{challenge_id} — {nombre}** creado.",
             ephemeral=True
         )
+
+        # Notificar al canal de desafíos si está configurado
+        async with pool.acquire() as conn:
+            gc = await conn.fetchrow(
+                "SELECT challenge_channel_id FROM guild_config WHERE guild_id = $1",
+                interaction.guild_id
+            )
+        channel_id = (gc or {}).get("challenge_channel_id")
+        if channel_id:
+            try:
+                channel = interaction.client.get_channel(channel_id) or                           await interaction.client.fetch_channel(channel_id)
+
+                # Timestamp hammertime para la fecha de vencimiento
+                if end_date:
+                    ts = int(end_date.timestamp())
+                    vence_hammertime = f"<t:{ts}:F> (<t:{ts}:R>)"
+                elif periodo.value == "current_match":
+                    vence_hammertime = f"Partida actual — {vence_txt}"
+                else:
+                    vence_hammertime = vence_txt
+
+                metric_bullets = "\n".join(
+                    f"• {line}" for line in metrics_line.split("\n")
+                )
+
+                embed = discord.Embed(
+                    title=f"🎯 Nuevo desafío — {nombre}",
+                    color=0x5865F2
+                )
+                embed.add_field(name="Condición", value=metric_bullets, inline=False)
+                embed.add_field(name="Vence", value=vence_hammertime, inline=False)
+                embed.set_footer(text=f"#{challenge_id} • {PERIOD_LABELS[periodo.value]}")
+
+                await channel.send(embed=embed)
+            except Exception as e:
+                log.warning(f"No se pudo notificar el desafío al canal: {e}")
 
     # ── /hll desafio listar ──────────────────────────────────
     @sub.command(name="listar", description="Muestra los desafíos activos")

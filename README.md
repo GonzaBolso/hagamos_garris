@@ -1,8 +1,9 @@
 # BOT Stats Hagamos_garris
 ## Pasos:
-- Configurar canales /hlladmin setchannel canal:#comandos canal_snapshots:#snapshots canal_desafios:#desafios canal_vinculados:#cuentas_vinculadas canal_eventos:#general
-- Configurar roles /hlladmin setroles [@admin] [@player]
-- Ver config con /hlladmin config
+- Configurar .env
+1. Configurar canales /hlladmin setchannel #canal:comandos #canal_snapshots:snapshots # :desafios #canal_vinculados:cuentas_vinculadas #canal_eventos:general
+2. Configurar roles /hlladmin setroles [@admin] [@player]
+3. Ver config con /hlladmin config 
 
 ## Comandos disponibles para ADMIN
 | Comando                                                    | Descripción                                |
