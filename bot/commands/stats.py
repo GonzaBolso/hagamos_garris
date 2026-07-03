@@ -1,6 +1,6 @@
 """
 commands/stats.py
-Grupo /stats con subcomandos: show, games
+Grupo /stats: show, games, weapon
 """
 import discord
 from discord import app_commands
@@ -8,29 +8,8 @@ from discord.ext import commands
 
 from checks import player_or_admin
 from timeutils import format_local
-from leaderboards import get_player_ranks, get_all_weapons_with_rank
-
-
-async def get_top_weapons(pool, steam_id: str, limit: int = 5) -> list:
-    """
-    Devuelve las armas con mas kills del jugador, ordenadas de mayor a
-    menor. Lista de dicts {weapon, kills}.
-    Usa la columna JSONB 'weapons' de match_player_stats.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT key AS weapon, SUM(value::int) AS kills
-            FROM match_player_stats,
-                 jsonb_each_text(weapons) AS t(key, value)
-            WHERE steam_id = $1
-            GROUP BY key
-            ORDER BY kills DESC
-            LIMIT $2
-            """,
-            steam_id, limit
-        )
-    return [{"weapon": r["weapon"], "kills": r["kills"]} for r in rows]
+from services import stats as stats_service
+from services.leaderboard import get_all_weapons_with_rank
 
 
 def setup_stats(bot: commands.Bot, pool):
@@ -42,19 +21,15 @@ def setup_stats(bot: commands.Bot, pool):
     async def show(interaction: discord.Interaction):
         await interaction.response.defer()
 
-        async with pool.acquire() as conn:
-            link = await conn.fetchrow(
-                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
-            )
-            if not link:
-                await interaction.followup.send(
-                    "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
-                )
-                return
+        steam_id, row, ranks, top_weapons = await stats_service.get_player_stats(
+            pool, interaction.user.id
+        )
 
-            row = await conn.fetchrow(
-                "SELECT * FROM player_totals WHERE steam_id = $1", link["steam_id"]
+        if not steam_id:
+            await interaction.followup.send(
+                "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
             )
+            return
 
         if not row:
             await interaction.followup.send(
@@ -63,8 +38,6 @@ def setup_stats(bot: commands.Bot, pool):
             return
 
         total_h = round((row["total_time_seconds"] or 0) / 3600, 1)
-        ranks = await get_player_ranks(pool, link["steam_id"])
-        top_weapons = await get_top_weapons(pool, link["steam_id"], limit=5)
 
         def rank_suffix(col: str) -> str:
             r = ranks.get(col)
@@ -88,7 +61,7 @@ def setup_stats(bot: commands.Bot, pool):
         embed = discord.Embed(
             title=f"📊 Stats de {row['last_name']}",
             description="\n".join(stats_lines),
-            color=0x5865F2
+            color=0x5865F2,
         )
 
         if top_weapons:
@@ -98,7 +71,7 @@ def setup_stats(bot: commands.Bot, pool):
             )
             embed.add_field(name="🔫 Top armas", value=weapons_str, inline=False)
 
-        embed.set_footer(text=f"Steam ID: {link['steam_id']}")
+        embed.set_footer(text=f"Steam ID: {steam_id}")
         await interaction.followup.send(embed=embed)
 
     # ── /stats games ──────────────────────────────────────────
@@ -109,33 +82,15 @@ def setup_stats(bot: commands.Bot, pool):
         await interaction.response.defer()
 
         cantidad = max(1, min(cantidad, 10))
+        steam_id, rows = await stats_service.get_player_recent_games(
+            pool, interaction.user.id, cantidad
+        )
 
-        async with pool.acquire() as conn:
-            link = await conn.fetchrow(
-                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
+        if not steam_id:
+            await interaction.followup.send(
+                "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
             )
-            if not link:
-                await interaction.followup.send(
-                    "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
-                )
-                return
-
-            rows = await conn.fetch(
-                """
-                SELECT
-                    m.map_name, m.start_time, m.allied_score, m.axis_score,
-                    mps.kills, mps.deaths, mps.combat_score,
-                    mps.offense_score, mps.defense_score, mps.support_score, mps.time_seconds
-                FROM match_player_stats mps
-                JOIN matches m USING (match_id)
-                WHERE mps.steam_id = $1
-                  AND (mps.kills != 0 OR mps.deaths != 0 OR mps.combat_score != 0
-                       OR mps.offense_score != 0 OR mps.defense_score != 0 OR mps.support_score != 0)
-                ORDER BY m.start_time DESC NULLS LAST
-                LIMIT $2
-                """,
-                link["steam_id"], cantidad
-            )
+            return
 
         if not rows:
             await interaction.followup.send("No tenés partidas registradas todavía.")
@@ -156,7 +111,7 @@ def setup_stats(bot: commands.Bot, pool):
                     f"Combat: {r['combat_score']} | Off: {r['offense_score']} "
                     f"| Def: {r['defense_score']} | Sup: {r['support_score']}"
                 ),
-                inline=False
+                inline=False,
             )
 
         await interaction.followup.send(embed=embed)
@@ -167,17 +122,15 @@ def setup_stats(bot: commands.Bot, pool):
     async def weapon(interaction: discord.Interaction):
         await interaction.response.defer()
 
-        async with pool.acquire() as conn:
-            link = await conn.fetchrow(
-                "SELECT steam_id FROM linked_players WHERE discord_id = $1", interaction.user.id
-            )
-        if not link:
+        steam_id, weapons = await stats_service.get_player_weapons(
+            pool, interaction.user.id
+        )
+
+        if not steam_id:
             await interaction.followup.send(
                 "❌ Vinculá tu Steam ID primero con `/hll registro <steam_id>`."
             )
             return
-
-        weapons = await get_all_weapons_with_rank(pool, link["steam_id"])
 
         if not weapons:
             await interaction.followup.send(
@@ -190,14 +143,9 @@ def setup_stats(bot: commands.Bot, pool):
             for w in weapons
         ]
 
-        # Salvaguarda: el límite de Discord para 'description' es 4096
-        # caracteres. Si un jugador usó MUCHAS armas distintas con
-        # nombres largos, recortamos antes de pasarnos, avisando cuántas
-        # quedaron afuera en vez de que el mensaje falle al enviarse.
         description = "\n".join(lines)
         if len(description) > 4000:
-            shown = []
-            total_len = 0
+            shown, total_len = [], 0
             for line in lines:
                 if total_len + len(line) + 1 > 3950:
                     break
@@ -209,7 +157,7 @@ def setup_stats(bot: commands.Bot, pool):
         embed = discord.Embed(
             title="🔫 Tus armas",
             description=description,
-            color=0x5865F2
+            color=0x5865F2,
         )
         embed.set_footer(text=f"{len(weapons)} arma(s) distintas usadas")
         await interaction.followup.send(embed=embed)

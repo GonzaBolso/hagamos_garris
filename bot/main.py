@@ -88,7 +88,7 @@ class HLLBot(commands.Bot):
                 name="Hell Let Loose 🪖"
             )
         )
-        await self._send_status("🟢 **Bot conectado**.")
+        await self._send_status("🟢 **Bot conectado** y listo.")
 
     async def _send_status(self, message: str):
         """Manda un mensaje al canal de status via webhook (confiable en

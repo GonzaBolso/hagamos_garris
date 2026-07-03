@@ -16,7 +16,8 @@ from discord import app_commands
 
 from checks import admin_only, player_or_admin
 from timeutils import format_local
-from leaderboards import TZ_UY, HLL_WEAPONS
+from services.leaderboard import TZ_UY, HLL_WEAPONS
+from db import challenges as db_challenges
 
 log = logging.getLogger(__name__)
 
@@ -130,11 +131,7 @@ async def format_metrics_line(pool, metrics: list) -> str:
     names_by_steam_id = {}
     if steam_ids_to_resolve:
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT steam_id, player_name FROM players WHERE steam_id = ANY($1::varchar[])",
-                steam_ids_to_resolve
-            )
-        names_by_steam_id = {r["steam_id"]: r["player_name"] for r in rows}
+            names_by_steam_id = await db_challenges.resolve_player_names(conn, steam_ids_to_resolve)
 
     parts = []
     for m in metrics:
@@ -452,36 +449,13 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                if periodo.value == "current_match":
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO challenges
-                            (guild_id, name, description, period, start_date, end_date,
-                             match_id, created_by, map_name, map_start)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                        RETURNING id
-                        """,
-                        interaction.guild_id, nombre, None, periodo.value,
-                        start_date, end_date, match_id, interaction.user.id, map_name, map_start
-                    )
-                else:
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO challenges
-                            (guild_id, name, description, period, start_date, end_date, match_id, created_by)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        RETURNING id
-                        """,
-                        interaction.guild_id, nombre, None, periodo.value,
-                        start_date, end_date, match_id, interaction.user.id
-                    )
-                challenge_id = row["id"]
-
+                extra = {"map_name": map_name, "map_start": map_start} if periodo.value == "current_match" else {}
+                challenge_id = await db_challenges.create_challenge(
+                    conn, interaction.guild_id, nombre, periodo.value,
+                    start_date, end_date, match_id, interaction.user.id, **extra
+                )
                 for metric, param, target in parsed_metrics:
-                    await conn.execute(
-                        "INSERT INTO challenge_metrics (challenge_id, metric, target, param) VALUES ($1, $2, $3, $4)",
-                        challenge_id, metric, target, param
-                    )
+                    await db_challenges.add_challenge_metric(conn, challenge_id, metric, target, param)
 
         metrics_line = await format_metrics_line(
             pool, [{"metric": m, "param": p, "target": t} for m, p, t in parsed_metrics]
@@ -504,11 +478,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
 
         # Notificar al canal de desafíos si está configurado
         async with pool.acquire() as conn:
-            gc = await conn.fetchrow(
-                "SELECT challenge_channel_id FROM guild_config WHERE guild_id = $1",
-                interaction.guild_id
-            )
-        channel_id = (gc or {}).get("challenge_channel_id")
+            channel_id = await db_challenges.get_guild_challenge_channel(conn, interaction.guild_id)
         if channel_id:
             try:
                 channel = interaction.client.get_channel(channel_id) or                           await interaction.client.fetch_channel(channel_id)
@@ -545,25 +515,16 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         await interaction.response.defer()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM challenges
-                WHERE guild_id = $1 AND active = TRUE
-                  AND (end_date IS NULL OR end_date > NOW())
-                ORDER BY id DESC
-                """,
-                interaction.guild_id
-            )
-            if not rows:
-                await interaction.followup.send("📭 No hay desafíos activos en este momento.")
-                return
+            rows = await db_challenges.get_active_challenges(conn, interaction.guild_id)
 
-            embed = discord.Embed(title="🎯 Desafíos Activos", color=0x5865F2)
+        if not rows:
+            await interaction.followup.send("📭 No hay desafíos activos en este momento.")
+            return
+
+        embed = discord.Embed(title="🎯 Desafíos Activos", color=0x5865F2)
+        async with pool.acquire() as conn:
             for r in rows:
-                metrics = await conn.fetch(
-                    "SELECT metric, target, param FROM challenge_metrics WHERE challenge_id = $1",
-                    r["id"]
-                )
+                metrics = await db_challenges.get_challenge_metrics(conn, r["id"])
                 metrics_line = await format_metrics_line(pool, metrics)
                 vence = format_vence(r)
                 embed.add_field(
@@ -603,12 +564,9 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         await interaction.response.defer(ephemeral=True)
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE challenges SET active = FALSE WHERE id = $1 AND guild_id = $2",
-                id, interaction.guild_id
-            )
+            updated = await db_challenges.deactivate_challenge(conn, id, interaction.guild_id)
 
-        if result == "UPDATE 0":
+        if not updated:
             await interaction.followup.send("❌ No existe ese desafío.", ephemeral=True)
         else:
             await interaction.followup.send(f"✅ Desafío #{id} desactivado.", ephemeral=True)
