@@ -572,3 +572,154 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             await interaction.followup.send("❌ No existe ese desafío.", ephemeral=True)
         else:
             await interaction.followup.send(f"✅ Desafío #{id} desactivado.", ephemeral=True)
+    # ── /hlladmin desafio plantilla ───────────────────────────
+    @admin_sub.command(name="plantilla", description="Descarga un JSON de ejemplo para importar desafíos")
+    @admin_only()
+    async def plantilla(interaction: discord.Interaction):
+        import io, json as _json
+
+        ejemplo = [
+            {
+                "nombre": "Semana de Rifles",
+                "periodo": "semanal",
+                "metricas": [
+                    {"tipo": "kills_weapon", "arma": "M1 GARAND", "objetivo": 100},
+                    {"tipo": "kills", "objetivo": 200}
+                ]
+            },
+            {
+                "nombre": "Partida perfecta",
+                "periodo": "current_match",
+                "metricas": [
+                    {"tipo": "kills", "objetivo": 30},
+                    {"tipo": "combat", "objetivo": 500}
+                ]
+            },
+            {
+                "nombre": "Desafío personalizado",
+                "periodo": "custom",
+                "inicio": "2026-07-05T00:00:00",
+                "fin": "2026-07-12T23:59:59",
+                "metricas": [
+                    {"tipo": "kills_type", "tipo_kill": "armor", "objetivo": 20},
+                    {"tipo": "kills_player", "steam_id": "76561199052198013", "objetivo": 5}
+                ]
+            }
+        ]
+
+        notas = {
+            "_notas": {
+                "periodos_validos": ["diario", "semanal", "mensual", "current_match", "next_match", "custom"],
+                "metricas_validas": ["kills", "deaths", "kd_ratio", "matches", "combat", "offense", "defense", "support", "kills_weapon", "kills_player", "kills_type"],
+                "tipos_kill_validos": ["infantry", "armor", "machine_gun", "sniper", "bazooka", "grenade", "mine", "satchel", "commander", "artillery", "self_propelled_artillery"],
+                "custom_requiere": "inicio y fin en formato ISO (YYYY-MM-DDTHH:MM:SS)",
+                "kills_weapon_requiere": "campo 'arma' con el nombre exacto (usar /hlladmin armas para ver la lista)",
+                "kills_player_requiere": "campo 'steam_id' de la víctima",
+                "kills_type_requiere": "campo 'tipo_kill'"
+            },
+            "desafios": ejemplo
+        }
+
+        data = _json.dumps(notas, ensure_ascii=False, indent=2)
+        file = discord.File(fp=io.BytesIO(data.encode()), filename="plantilla_desafios.json")
+        await interaction.response.send_message(
+            "📄 Editá este archivo y subilo con `/hlladmin desafio importar`.",
+            file=file,
+            ephemeral=True
+        )
+
+    # ── /hlladmin desafio importar ───────────────────────────
+    @admin_sub.command(name="importar", description="Crea desafíos desde un archivo JSON")
+    @app_commands.describe(archivo="Archivo JSON con los desafíos a crear")
+    @admin_only()
+    async def importar(interaction: discord.Interaction, archivo: discord.Attachment):
+        await interaction.response.defer(ephemeral=True)
+        import io, json as _json
+
+        if not archivo.filename.endswith(".json"):
+            await interaction.followup.send("❌ El archivo debe ser un `.json`.", ephemeral=True)
+            return
+
+        try:
+            raw = await archivo.read()
+            data = _json.loads(raw.decode("utf-8"))
+            desafios = data.get("desafios", data) if isinstance(data, dict) else data
+            if not isinstance(desafios, list):
+                raise ValueError("El JSON debe ser una lista de desafíos o un objeto con clave 'desafios'.")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error leyendo el archivo: `{e}`", ephemeral=True)
+            return
+
+        PERIODO_MAP = {
+            "diario": "daily", "semanal": "weekly", "mensual": "monthly",
+            "current_match": "current_match", "next_match": "next_match", "custom": "custom"
+        }
+
+        creados = []
+        errores = []
+
+        for i, d in enumerate(desafios):
+            try:
+                nombre  = d.get("nombre") or f"Desafío {i+1}"
+                periodo = PERIODO_MAP.get(d.get("periodo", ""), d.get("periodo", ""))
+                inicio  = d.get("inicio")
+                fin     = d.get("fin")
+                metricas = d.get("metricas") or []
+
+                if not metricas:
+                    raise ValueError("Sin métricas")
+
+                # Calcular fechas
+                start_date = end_date = match_id = map_name = map_start = None
+                if periodo == "daily":
+                    now = datetime.now(timezone.utc)
+                    start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_date   = start_date + timedelta(days=1)
+                elif periodo == "weekly":
+                    now = datetime.now(timezone.utc)
+                    start_date = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_date   = start_date + timedelta(weeks=1)
+                elif periodo == "monthly":
+                    now = datetime.now(timezone.utc)
+                    start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                    end_date   = (start_date + timedelta(days=32)).replace(day=1)
+                elif periodo == "custom":
+                    # El JSON manda hora local (UTC-3) sin offset — igual que parse_dt
+                    from datetime import timedelta as _td
+                    _LOCAL = timezone(_td(hours=-3))
+                    start_date = datetime.fromisoformat(inicio).replace(tzinfo=_LOCAL).astimezone(timezone.utc) if inicio else None
+                    end_date   = datetime.fromisoformat(fin).replace(tzinfo=_LOCAL).astimezone(timezone.utc) if fin else None
+
+                parsed_metrics = []
+                for m in metricas:
+                    tipo = m.get("tipo")
+                    obj  = float(m.get("objetivo", 0))
+                    if tipo == "kills_weapon":
+                        param = m.get("arma")
+                    elif tipo == "kills_player":
+                        param = m.get("steam_id")
+                    elif tipo == "kills_type":
+                        param = m.get("tipo_kill")
+                    else:
+                        param = None
+                    parsed_metrics.append((tipo, param, obj))
+
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        challenge_id = await db_challenges.create_challenge(
+                            conn, interaction.guild_id, nombre, periodo,
+                            start_date, end_date, match_id, interaction.user.id,
+                            **({} if periodo != "current_match" else {"map_name": map_name, "map_start": map_start})
+                        )
+                        for metric, param, target in parsed_metrics:
+                            await db_challenges.add_challenge_metric(conn, challenge_id, metric, target, param)
+
+                creados.append(f"✅ #{challenge_id} — {nombre}")
+            except Exception as e:
+                errores.append(f"❌ Desafío {i+1} ({d.get('nombre','?')}): {e}")
+
+        lines = ["**Desafíos importados:**"] + creados
+        if errores:
+            lines += ["", "**Errores:**"] + errores
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
