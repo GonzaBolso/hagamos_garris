@@ -21,7 +21,7 @@ async def get_vinculados_embed(pool) -> discord.Embed:
             steam_display = f"{r['steam_name']} " if r['steam_name'] else ""
             lines.append(
                 f"`{r['discord_name'] or '?'}` — {steam_display}`{r['steam_id']}` "
-                f"_(vinculado {format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
+                f"_({format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
             )
 
         description = "\n".join(lines)
@@ -38,14 +38,14 @@ async def get_vinculados_embed(pool) -> discord.Embed:
         description = "_Todavía no hay nadie vinculado._"
         lines = []
 
+    from datetime import datetime, timezone
     embed = discord.Embed(
         title="🔗 Cuentas vinculadas (Discord ↔ Steam)",
         description=description,
         color=0x5865F2,
     )
-    embed.set_footer(
-        text=f"{len(rows)} cuenta(s) vinculada(s) • Ordenado por más reciente"
-    )
+    embed.set_footer(text=f"{len(rows)} cuenta(s) vinculada(s) • Ordenado por más reciente")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 

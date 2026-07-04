@@ -197,6 +197,7 @@ async def build_progress_embed(pool, challenge_id: int, guild_id: int):
             challenge_id
         )
 
+        # Clave por ID (no por metric) para soportar dos kills_weapon distintos
         per_metric = {}
         for m in metrics:
             rows = await conn.fetch(
@@ -207,25 +208,26 @@ async def build_progress_embed(pool, challenge_id: int, guild_id: int):
                 """,
                 m["id"]
             )
-            per_metric[m["metric"]] = {r["steam_id"]: r["progress"] for r in rows}
+            per_metric[m["id"]] = {r["steam_id"]: r["progress"] for r in rows}
 
     metrics_line = await format_metrics_line(pool, metrics)
 
     if not overall:
         return None, challenge
 
-    metric_names = [mr["metric"] for mr in metrics]
-    total_metrics = len(metric_names)
-    min_ceros_para_ocultar = -(-total_metrics // 2)  # ceil(total / 2)
-    primary_metric = metric_names[0] if metric_names else None
+    metric_ids    = [mr["id"]     for mr in metrics]
+    metric_names  = [mr["metric"] for mr in metrics]
+    total_metrics = len(metric_ids)
+    min_ceros_para_ocultar = -(-total_metrics // 2)
+    primary_id = metric_ids[0] if metric_ids else None
 
     visibles = []
     for r in overall:
-        valores = [per_metric.get(m, {}).get(r["steam_id"], 0) or 0 for m in metric_names]
+        valores = [per_metric.get(mid, {}).get(r["steam_id"], 0) or 0 for mid in metric_ids]
         ceros = sum(1 for v in valores if v == 0)
         if ceros >= min_ceros_para_ocultar:
             continue
-        primary_value = per_metric.get(primary_metric, {}).get(r["steam_id"], 0) or 0
+        primary_value = per_metric.get(primary_id, {}).get(r["steam_id"], 0) or 0
         visibles.append((primary_value, r))
 
     visibles.sort(key=lambda t: t[0], reverse=True)
@@ -238,8 +240,8 @@ async def build_progress_embed(pool, challenge_id: int, guild_id: int):
     for i, (_, r) in enumerate(visibles):
         check = " ✅" if r["completed"] else ""
         valores_str = " ".join(
-            f"{METRIC_EMOJIS.get(m, '')}{per_metric.get(m, {}).get(r['steam_id'], 0):g}"
-            for m in metric_names
+            f"{METRIC_EMOJIS.get(metric_names[j], '')}{per_metric.get(metric_ids[j], {}).get(r['steam_id'], 0):g}"
+            for j in range(len(metric_ids))
         )
         lines.append(f"`{i+1}.` **{r['player_name']}** {valores_str}{check}")
 

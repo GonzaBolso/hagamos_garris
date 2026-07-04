@@ -111,6 +111,9 @@ class CRCONClient:
     async def get_public_info(self):
         return await self._get("get_public_info")
 
+    async def get_team_view(self):
+        return await self._get("get_team_view")
+
     # ── VIP ───────────────────────────────────────────────────
     async def get_vip_ids(self):
         return await self._get("get_vip_ids")

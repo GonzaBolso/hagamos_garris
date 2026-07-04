@@ -9,7 +9,7 @@ from discord.ext import tasks
 
 from api import crcon, CRCONError
 from db import guild as db_guild
-from services.server import build_server_status_embed
+from services.server import build_server_status_embed, build_team_view_embeds
 
 log = logging.getLogger(__name__)
 
@@ -27,14 +27,14 @@ def setup_server_status_task(bot, pool):
                 return
 
             try:
-                state   = await crcon.get_gamestate()
-                slots   = await crcon.get_slots()
-                players = await crcon.get_players()
+                info      = await crcon.get_public_info()
+                team_view = await crcon.get_team_view()
             except CRCONError as e:
                 log.warning(f"[server_status] CRCON error: {e}")
                 return
 
-            embed = build_server_status_embed(state, slots, players or [])
+            from config import CRCON_URL
+            embed = build_server_status_embed(info, {}, [], crcon_url=CRCON_URL)
 
             for row in configs:
                 guild_id    = row["guild_id"]
@@ -48,10 +48,18 @@ def setup_server_status_task(bot, pool):
                     except discord.HTTPException:
                         continue
 
+                by_team   = (info or {}).get("player_count_by_team") or {}
+                team_embeds = build_team_view_embeds(
+                    team_view or {},
+                    allied=by_team.get("allied", 0),
+                    axis=by_team.get("axis", 0),
+                )
+                embeds = [embed] + team_embeds
+
                 if message_id:
                     try:
                         msg = await channel.fetch_message(message_id)
-                        await msg.edit(embed=embed)
+                        await msg.edit(embeds=embeds)
                         continue
                     except discord.NotFound:
                         pass
@@ -61,7 +69,7 @@ def setup_server_status_task(bot, pool):
 
                 # Si no hay mensaje guardado o fue borrado, creamos uno nuevo
                 try:
-                    new_msg = await channel.send(embed=embed)
+                    new_msg = await channel.send(embeds=embeds)
                     async with pool.acquire() as conn:
                         await db_guild.set_server_status_message_id(conn, guild_id, new_msg.id)
                 except discord.HTTPException as e:

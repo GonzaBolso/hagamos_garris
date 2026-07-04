@@ -29,14 +29,52 @@ def format_time_remaining(seconds) -> str:
 def build_server_state(state: dict, slots: dict) -> dict:
     """Extrae los campos relevantes de get_gamestate y get_slots."""
     return {
-        "current_map":  state.get("current_map", {}).get("pretty_name", "?"),
-        "next_map":     state.get("next_map", {}).get("pretty_name", "?"),
-        "allied":       state.get("num_allied_players", 0),
-        "axis":         state.get("num_axis_players", 0),
-        "time_rem":     format_time_remaining(state.get("time_remaining")),
-        "score_allied": state.get("allied_score", 0),
-        "score_axis":   state.get("axis_score", 0),
-        "max_players":  (slots or {}).get("max_players", 100),
+        "current_map":        state.get("current_map", {}).get("pretty_name", "?"),
+        "next_map":           state.get("next_map", {}).get("pretty_name", "?"),
+        "allied":             state.get("num_allied_players", 0),
+        "axis":               state.get("num_axis_players", 0),
+        "time_rem":           format_time_remaining(state.get("time_remaining")),
+        "score_allied":       state.get("allied_score", 0),
+        "score_axis":         state.get("axis_score", 0),
+        "max_players":        (slots or {}).get("max_players", 100),
+        "current_map_image":  state.get("current_map", {}).get("image_name"),
+        "next_map_image":     state.get("next_map", {}).get("image_name"),
+    }
+
+
+def build_server_state_from_public_info(info: dict, slots: dict) -> dict:
+    """
+    Alternativa a build_server_state usando get_public_info, que tiene
+    image_name disponible directamente en current_map/next_map.
+    """
+    current = (info or {}).get("current_map") or {}
+    nxt     = (info or {}).get("next_map") or {}
+    current_map_data = current.get("map") or {}
+    next_map_data    = nxt.get("map") or {}
+    score   = (info or {}).get("score") or {}
+    by_team = (info or {}).get("player_count_by_team") or {}
+    name_info   = (info or {}).get("name") or {}
+    vote_status = (info or {}).get("vote_status") or []
+    votes = [
+        {
+            "map_name": v.get("map", {}).get("pretty_name", "?"),
+            "votes":    len(v.get("voters") or []),
+        }
+        for v in vote_status
+    ]
+    return {
+        "current_map":        current_map_data.get("pretty_name", "?"),
+        "next_map":           next_map_data.get("pretty_name", "?"),
+        "allied":             by_team.get("allied", 0),
+        "axis":               by_team.get("axis", 0),
+        "time_rem":           format_time_remaining((info or {}).get("time_remaining")),
+        "score_allied":       score.get("allied", 0),
+        "score_axis":         score.get("axis", 0),
+        "max_players":        (info or {}).get("max_player_count") or (slots or {}).get("max_players", 100),
+        "current_map_image":  current_map_data.get("image_name"),
+        "next_map_image":     next_map_data.get("image_name"),
+        "server_name":        name_info.get("short_name") or name_info.get("name", ""),
+        "votes":              votes,
     }
 
 
@@ -65,47 +103,154 @@ def build_perfil_data(data: dict) -> dict:
     }
 
 
-def build_server_status_embed(state: dict, slots: dict, players: list) -> "discord.Embed":
+def build_server_status_embed(state: dict, slots: dict, players: list,
+                               crcon_url: str = "") -> "discord.Embed":
     """
     Embed combinado de estado del servidor + jugadores online.
     Se usa para el panel que se edita en lugar cada 60s.
+    crcon_url: base URL de CRCON para construir las URLs de imágenes de mapa.
     """
     import discord
     from datetime import datetime, timezone
 
-    s = build_server_state(state, slots)
+    s = build_server_state_from_public_info(state, slots) if "current_map" in state and isinstance(state.get("current_map"), dict) and "map" in state.get("current_map", {}) else build_server_state(state, slots)
     total = s["allied"] + s["axis"]
 
+    title = s.get("server_name") or "Estado del Servidor"
     embed = discord.Embed(
-        title="🖥️ Estado del Servidor",
+        title=title,
         color=0x57F287 if total > 0 else 0x99AAB5,
     )
-    embed.add_field(name="🗺️ Mapa actual",     value=s["current_map"], inline=False)
-    embed.add_field(name="⏭️ Próximo mapa",    value=s["next_map"],    inline=False)
-    embed.add_field(name="⏱️ Tiempo restante", value=s["time_rem"],    inline=False)
-    embed.add_field(
-        name="👥 Jugadores",
-        value=f"{total}/{s['max_players']} — Aliados: {s['allied']} | Eje: {s['axis']}",
-        inline=True,
-    )
-    embed.add_field(
-        name="🏆 Score",
-        value=f"Aliados {s['score_allied']} — {s['score_axis']} Eje",
-        inline=True,
-    )
 
-    if players:
-        names = [p.get("name", "?") for p in players[:30]]
-        embed.add_field(
-            name=f"🟢 Conectados ({len(players)})",
-            value=", ".join(names) + ("..." if len(players) > 30 else ""),
-            inline=False,
-        )
-    else:
-        embed.add_field(name="🔴 Sin jugadores", value="El servidor está vacío.", inline=False)
+    # Fila 1: mapa actual | próximo mapa (2 columnas)
+    embed.add_field(name="🗺️ Mapa actual",  value=s["current_map"], inline=True)
+    embed.add_field(name="⏭️ Próximo mapa", value=s["next_map"],    inline=True)
 
-    # Timestamp de Discord — se muestra en la hora local del usuario
-    now_ts = int(datetime.now(timezone.utc).timestamp())
-    embed.set_footer(text=f"Actualizado: <t:{now_ts}:R>")
+    # Fila 2: tiempo restante | score (2 columnas)
+    embed.add_field(name="⏱️ Tiempo restante", value=s["time_rem"],                              inline=True)
+    embed.add_field(name="🏆 Score",           value=f"Aliados {s['score_allied']} — {s['score_axis']} Eje", inline=True)
+
+    # Votación del próximo mapa
+    votes = s.get("votes") or []
+    if votes:
+        total_votes = sum(v["votes"] for v in votes)
+        lines = []
+        for v in sorted(votes, key=lambda x: x["votes"], reverse=True):
+            bar = "█" * v["votes"] + "░" * (total_votes - v["votes"]) if total_votes > 0 else ""
+            count = f"{v['votes']} voto{'s' if v['votes'] != 1 else ''}" if v["votes"] else "sin votos"
+            lines.append(f"`{bar or '░░░░░░'}` {v['map_name']} — {count}")
+        embed.add_field(name="🗳️ Votación próximo mapa", value="\n".join(lines), inline=False)
+
+    if crcon_url and s.get("current_map_image"):
+        embed.set_image(url=f"{crcon_url.rstrip('/')}/maps/{s['current_map_image']}")
+
     embed.timestamp = datetime.now(timezone.utc)
     return embed
+
+
+def build_online_embed(players: list, allied: int = 0, axis: int = 0) -> "discord.Embed":
+    """Embed de jugadores conectados, estilo /hll online."""
+    import discord
+    if not players:
+        return discord.Embed(
+            title="🔴 Sin jugadores",
+            description="El servidor está vacío.",
+            color=0x99AAB5,
+        )
+    names  = [p.get("name", "?") for p in players]
+    mid    = (len(names) + 1) // 2
+    col1   = names[:mid]
+    col2   = names[mid:]
+    total_p = len(players)
+    embed  = discord.Embed(
+        title=f"🟢 {total_p} jugador{'es' if total_p != 1 else ''} — Aliados: {allied} | Eje: {axis}",
+        color=0x57F287,
+    )
+    embed.add_field(
+        name="Jugadores",
+        value="\n".join(f"• {n}" for n in col1),
+        inline=True,
+    )
+    if col2:
+        embed.add_field(
+            name="\u200b",
+            value="\n".join(f"• {n}" for n in col2),
+            inline=True,
+        )
+    return embed
+
+
+ROLE_ABBR = {
+    "officer":           "OF",
+    "spotter":           "SP",
+    "rifleman":          "RI",
+    "assault":           "AS",
+    "automaticrifleman": "AR",
+    "medic":             "ME",
+    "support":           "SU",
+    "heavymachinegunner":"MG",
+    "antitank":          "AT",
+    "engineer":          "EN",
+    "tankcommander":     "TC",
+    "crewman":           "CR",
+    "sniper":            "SN",
+    "armycommander":     "CO",
+}
+
+SQUAD_TYPE_EMOJI = {
+    "infantry": "🪖",
+    "recon":    "🎯",
+    "armor":    "🪖",
+    "armor":    "🔩",
+    "command":  "⭐",
+}
+
+
+def build_team_view_embeds(team_view: dict, allied: int = 0, axis: int = 0) -> list:
+    """
+    Genera dos embeds (aliados y eje) con la composición de squads.
+    Versión compacta: una línea por squad.
+    """
+    import discord
+
+    def render_team(team_data: dict, label: str, color: int) -> "discord.Embed":
+        embed = discord.Embed(title=label, color=color)
+        squads = team_data.get("squads") or {}
+        total  = team_data.get("count", 0)
+
+        for squad_name, squad in sorted(squads.items()):
+            if squad_name == "unassigned":
+                continue
+            players    = squad.get("players") or []
+            has_leader = squad.get("has_leader", False)
+            stype      = squad.get("type", "infantry")
+            emoji      = SQUAD_TYPE_EMOJI.get(stype, "🪖")
+            leader_tag = "👑" if has_leader else "⚠️"
+            names      = ", ".join(
+                f"{p['name']}({ROLE_ABBR.get(p.get('role',''), '??')})"
+                for p in players[:6]
+            ) + ("…" if len(players) > 6 else "")
+            field_name  = f"{emoji} {squad_name.upper()} {leader_tag} ({len(players)})"
+            field_value = names or "—"
+            if len(field_value) > 1024:
+                field_value = field_value[:1020] + "…"
+            embed.add_field(name=field_name, value=field_value, inline=False)
+
+        # Unasignados
+        unassigned = (squads.get("unassigned") or {}).get("players") or []
+        if unassigned:
+            names = ", ".join(p["name"] for p in unassigned[:15])
+            if len(unassigned) > 15:
+                names += f" +{len(unassigned)-15} más"
+            embed.add_field(name=f"❓ Sin escuadrón ({len(unassigned)})", value=names, inline=False)
+
+        embed.set_footer(text=f"{total} jugadores")
+        return embed
+
+    allies_data = team_view.get("allies") or {}
+    axis_data   = team_view.get("axis") or {}
+
+    return [
+        render_team(allies_data, f"🔵 Aliados — {allied} jugadores", 0x3498DB),
+        render_team(axis_data,   f"🔴 Eje — {axis} jugadores",       0xE74C3C),
+    ]
