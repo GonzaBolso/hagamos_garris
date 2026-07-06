@@ -3,24 +3,6 @@
 Bot de Discord + Collector para servidores de **Hell Let Loose** con CRCON.  
 Recolecta estadísticas de partidas, genera rankings, administra desafíos y muestra el estado del servidor en tiempo real.
 
----
-
-## Arquitectura
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   hll-collector │────▶│   PostgreSQL      │◀────│    hll-bot      │
-│  (Python async) │     │  (match stats,    │     │ (discord.py)    │
-└─────────────────┘     │   challenges,     │     └─────────────────┘
-         │              │   players, etc.)  │              │
-         ▼              └──────────────────┘              ▼
-┌─────────────────┐                              ┌─────────────────┐
-│   CRCON API     │                              │  Discord Server  │
-│  (8010 con auth)│                              └─────────────────┘
-└─────────────────┘
-```
-
----
 
 ## Instalación
 
