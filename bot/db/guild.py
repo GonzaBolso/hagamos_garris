@@ -128,3 +128,19 @@ async def get_all_server_status_configs(conn: asyncpg.Connection) -> list:
     return await conn.fetch(
         "SELECT guild_id, server_status_channel_id, server_status_message_id FROM guild_config WHERE server_status_channel_id IS NOT NULL"
     )
+
+
+async def get_snapshot_last_fired(conn) -> "datetime.date | None":
+    """Devuelve la última fecha en que se disparó el snapshot (persiste reinicios)."""
+    import datetime
+    row = await conn.fetchrow(
+        "SELECT MAX(snapshot_last_fired) AS d FROM guild_config WHERE snapshot_last_fired IS NOT NULL"
+    )
+    return row["d"] if row else None
+
+
+async def set_snapshot_last_fired(conn, date: "datetime.date") -> None:
+    await conn.execute(
+        "UPDATE guild_config SET snapshot_last_fired = $1 WHERE snapshot_last_fired IS NULL OR snapshot_last_fired < $1",
+        date,
+    )

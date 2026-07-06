@@ -80,25 +80,36 @@ def build_server_state_from_public_info(info: dict, slots: dict) -> dict:
 
 def build_perfil_data(data: dict) -> dict:
     """Extrae los campos del perfil de un jugador desde get_player_profile."""
-    sessions    = (data or {}).get("sessions") or []
-    total_h     = round(sum(s.get("total_playtime_seconds", 0) for s in sessions) / 3600, 1)
-    vip_info    = (data or {}).get("vip_status") or {}
-    is_vip      = bool(vip_info.get("is_vip"))
-    vip_exp     = vip_info.get("expiration")
-    steam_info  = (data or {}).get("steam_info") or {}
-    profile     = steam_info.get("profile") or {}
-    bans        = steam_info.get("bans") or {}
+    d           = data or {}
+    # Horas: usar total_playtime_seconds del perfil (no sumar sesiones parciales)
+    total_h     = round(d.get("total_playtime_seconds", 0) / 3600, 1)
+    # Sesiones: usar sessions_count (total real, no solo las devueltas)
+    sessions    = d.get("sessions_count") or len(d.get("sessions") or [])
+    # Nivel: viene en soldier.level
+    soldier     = d.get("soldier") or {}
+    level       = soldier.get("level")
+    platform    = soldier.get("platform", "")
+    clan_tag    = soldier.get("clan_tag", "") or ""
+    # VIP
+    vips        = d.get("vips") or []
+    is_vip      = d.get("is_vip") or bool(vips)
+    vip_exp     = vips[0].get("expiration") if vips else None
+    # Steam info
+    steaminfo   = d.get("steaminfo") or {}
+    profile     = (steaminfo.get("profile") or {})
+    bans        = (steaminfo.get("bans") or {})
 
     return {
-        "last_name":   (data or {}).get("names", [{}])[0].get("name", "?") if (data or {}).get("names") else "?",
-        "clan_tag":    (data or {}).get("clan_tag") or "",
-        "level":       (data or {}).get("current_playtime_seconds"),  # placeholder
-        "sessions":    len(sessions),
+        "last_name":   d.get("names", [{}])[0].get("name", "?") if d.get("names") else "?",
+        "clan_tag":    clan_tag,
+        "level":       level,
+        "platform":    platform,
+        "sessions":    sessions,
         "total_h":     total_h,
         "is_vip":      is_vip,
         "vip_exp":     vip_exp,
         "avatar":      profile.get("avatarfull"),
-        "country":     steam_info.get("country"),
+        "country":     steaminfo.get("country"),
         "vac_banned":  bans.get("VACBanned", False),
     }
 

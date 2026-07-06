@@ -201,6 +201,11 @@ def setup_snapshot_task(bot, pool, crcon_client):
         last_fired_date["value"] = today
         wait_state["baseline_start"] = None
         wait_state["started_at"] = None
+        try:
+            async with pool.acquire() as conn:
+                await db_guild.set_snapshot_last_fired(conn, today)
+        except Exception as e:
+            log.warning(f"No se pudo persistir snapshot_last_fired: {e}")
 
     @tasks.loop(minutes=1)
     async def snapshot_loop():
@@ -287,5 +292,11 @@ def setup_snapshot_task(bot, pool, crcon_client):
         # El mapa actual arrancó EN o DESPUÉS del horario de corte -> no
         # hay nada que esperar, mandamos el snapshot normalmente.
         await _fire_snapshots(now_uy, today)
+
+    # Cargar last_fired desde BD cuando el bot arranque
+    @snapshot_loop.before_loop
+    async def before_snapshot():
+        await bot.wait_until_ready()
+        await _load_last_fired()
 
     return snapshot_loop

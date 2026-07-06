@@ -196,8 +196,32 @@ def setup_hll(bot: commands.Bot, pool):
             embed.description = "**Jugador**"
 
         embed.add_field(name="🆔 Steam ID",      value=f"`{steam_id}`",     inline=False)
-        embed.add_field(name="⏱️ Horas jugadas", value=f"{p['total_h']}h",  inline=True)
-        embed.add_field(name="🔄 Sesiones",       value=str(p["sessions"]), inline=True)
+        if p["level"]:
+            platform_emoji = "🎮" if p.get("platform") == "epic" else "💨"
+            embed.add_field(name=f"{platform_emoji} Nivel", value=str(p["level"]), inline=True)
+
+        # Si CRCON no tiene datos de horas (Epic players), usar stats de la BD
+        total_h  = p["total_h"]
+        sessions = p["sessions"]
+        if total_h == 0 or sessions == 0:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT COUNT(DISTINCT match_id) AS partidas,
+                           SUM(time_seconds) AS segundos
+                    FROM match_player_stats
+                    WHERE steam_id = $1
+                    """,
+                    steam_id,
+                )
+            if row and row["partidas"]:
+                if sessions == 0:
+                    sessions = row["partidas"]
+                if total_h == 0 and row["segundos"]:
+                    total_h = round(row["segundos"] / 3600, 1)
+
+        embed.add_field(name="⏱️ Horas jugadas", value=f"{total_h}h",  inline=True)
+        embed.add_field(name="🔄 Sesiones",       value=str(sessions), inline=True)
         if p["country"]:
             flag = server_service.country_to_flag(p["country"])
             embed.add_field(name="🌍 País", value=f"{flag} {p['country']}".strip(), inline=True)
