@@ -175,3 +175,12 @@ async def get_player_rank(conn: asyncpg.Connection, steam_id: str, col: str):
         steam_id,
     )
     return (row["rank"], row["total"]) if row else None
+
+
+async def get_map_bounds(conn, map_id: str) -> dict | None:
+    """Devuelve los bounds calibrados de un mapa."""
+    row = await conn.fetchrow(
+        "SELECT x_min, x_max, y_min, y_max, samples FROM map_bounds WHERE map_id = $1",
+        map_id,
+    )
+    return dict(row) if row else None

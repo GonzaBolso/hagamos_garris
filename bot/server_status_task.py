@@ -56,24 +56,25 @@ def setup_server_status_task(bot, pool):
                 )
                 embeds = [embed] + team_embeds
 
+                # Mensaje principal (embeds) — siempre se edita
                 if message_id:
                     try:
                         msg = await channel.fetch_message(message_id)
                         await msg.edit(embeds=embeds)
-                        continue
                     except discord.NotFound:
-                        pass
+                        message_id = None
                     except discord.HTTPException as e:
                         log.warning(f"[server_status] Error editando mensaje: {e}")
-                        continue
 
-                # Si no hay mensaje guardado o fue borrado, creamos uno nuevo
-                try:
-                    new_msg = await channel.send(embeds=embeds)
-                    async with pool.acquire() as conn:
-                        await db_guild.set_server_status_message_id(conn, guild_id, new_msg.id)
-                except discord.HTTPException as e:
-                    log.warning(f"[server_status] Error enviando mensaje: {e}")
+                if not message_id:
+                    try:
+                        new_msg = await channel.send(embeds=embeds)
+                        async with pool.acquire() as conn:
+                            await db_guild.set_server_status_message_id(conn, guild_id, new_msg.id)
+                    except discord.HTTPException as e:
+                        log.warning(f"[server_status] Error enviando mensaje: {e}")
+
+
 
         except Exception as e:
             log.error(f"[server_status] Error en loop: {e}", exc_info=True)

@@ -36,6 +36,10 @@ async def fetch_public_info(session: aiohttp.ClientSession) -> dict:
     return await _get(session, "get_public_info")
 
 
+async def fetch_team_view(session: aiohttp.ClientSession) -> dict:
+    return await _get(session, "get_team_view")
+
+
 async def fetch_live_game_stats(session: aiohttp.ClientSession) -> dict:
     return await _get(session, "get_live_game_stats")
 

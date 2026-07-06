@@ -11,6 +11,7 @@ import asyncpg
 
 import config
 import crcon
+import db
 import service
 
 logging.basicConfig(
@@ -85,6 +86,36 @@ async def live_polling_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession) 
         await asyncio.sleep(config.LIVE_POLL_INTERVAL_SECONDS)
 
 
+async def map_bounds_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession) -> None:
+    """Cada 60s: acumula world_position de jugadores para calibrar los bounds de cada mapa."""
+    log.info("Map bounds collector iniciado (cada 60s)")
+    while True:
+        try:
+            info      = await crcon.fetch_public_info(session)
+            current   = (info or {}).get("current_map") or {}
+            map_data  = current.get("map") or {}
+            map_id    = map_data.get("id")
+
+            if map_id:
+                team_view = await crcon.fetch_team_view(session)
+                positions = []
+                for team_key in ("allies", "axis"):
+                    team = (team_view or {}).get(team_key) or {}
+                    for squad in (team.get("squads") or {}).values():
+                        for player in (squad.get("players") or []):
+                            wp = player.get("world_position") or {}
+                            if wp.get("x") is not None:
+                                positions.append({"x": wp["x"], "y": wp["y"]})
+
+                if positions:
+                    async with pool.acquire() as conn:
+                        await db.update_map_bounds(conn, map_id, positions)
+
+        except Exception as e:
+            log.warning(f"Error en map_bounds_loop: {e}")
+        await asyncio.sleep(60)
+
+
 async def event_detector_loop(pool: asyncpg.Pool, session: aiohttp.ClientSession) -> None:
     """Cada EVENT_DETECTOR_INTERVAL_SECONDS: detecta fakeos y otros eventos destacados."""
     log.info(f"Detector de eventos iniciado (cada {config.EVENT_DETECTOR_INTERVAL_SECONDS}s)")
@@ -112,6 +143,7 @@ async def run() -> None:
             main_collector_loop(pool, session),
             live_polling_loop(pool, session),
             event_detector_loop(pool, session),
+            map_bounds_loop(pool, session),
         )
 
 

@@ -34,37 +34,46 @@ def setup_hll(bot: commands.Bot, pool):
     @admin_group.command(name="setchannel", description="Configura los canales del bot")
     @app_commands.describe(
         canal="Canal donde los jugadores podrán usar los comandos",
-        canal_snapshots="Canal para los Top diarios/semanales/mensuales automáticos (opcional)",
-        canal_desafios="Canal donde se manda el cierre de desafíos (opcional)",
-        canal_vinculados="Canal privado con la lista de cuentas vinculadas (opcional)",
-        canal_eventos="Canal para eventos destacados en vivo (opcional)",
-        canal_status="Canal con panel de estado del servidor actualizado automáticamente (opcional)"
+        canal_snapshots="Canal para los Top diarios/semanales/mensuales automáticos",
+        canal_desafios="Canal donde se manda el cierre de desafíos",
+        canal_vinculados="Canal privado con la lista de cuentas vinculadas",
+        canal_eventos="Canal para eventos destacados en vivo (fakeos, etc.)",
+        canal_status="Canal con panel de estado del servidor actualizado automáticamente"
     )
     @admin_only()
     async def setchannel(interaction: discord.Interaction,
-                          canal: discord.TextChannel,
+                          canal: discord.TextChannel = None,
                           canal_snapshots: discord.TextChannel = None,
                           canal_desafios: discord.TextChannel = None,
                           canal_vinculados: discord.TextChannel = None,
                           canal_eventos: discord.TextChannel = None,
                           canal_status: discord.TextChannel = None):
+        if not any([canal, canal_snapshots, canal_desafios,
+                    canal_vinculados, canal_eventos, canal_status]):
+            await interaction.response.send_message(
+                "❌ Tenés que especificar al menos un canal.", ephemeral=True
+            )
+            return
+
         async with pool.acquire() as conn:
             await db_guild.upsert_channels(
-                conn, interaction.guild_id, canal.id,
-                canal_snapshots.id if canal_snapshots else None,
-                canal_desafios.id  if canal_desafios  else None,
+                conn, interaction.guild_id,
+                canal.id            if canal            else None,
+                canal_snapshots.id  if canal_snapshots  else None,
+                canal_desafios.id   if canal_desafios   else None,
                 canal_vinculados.id if canal_vinculados else None,
-                canal_eventos.id   if canal_eventos    else None,
-                canal_status.id    if canal_status     else None,
+                canal_eventos.id    if canal_eventos    else None,
+                canal_status.id     if canal_status     else None,
             )
 
-        msg = f"✅ Canal de jugadores configurado: {canal.mention}"
-        if canal_snapshots:  msg += f"\n✅ Canal de snapshots: {canal_snapshots.mention}"
-        if canal_desafios:   msg += f"\n✅ Canal de desafíos: {canal_desafios.mention}"
-        if canal_vinculados: msg += f"\n✅ Canal de vinculados: {canal_vinculados.mention}"
-        if canal_eventos:    msg += f"\n✅ Canal de eventos: {canal_eventos.mention}"
-        if canal_status:     msg += f"\n✅ Canal de estado del servidor: {canal_status.mention}"
-        await interaction.response.send_message(msg, ephemeral=True)
+        lines = ["✅ Canales actualizados:"]
+        if canal:           lines.append(f"• Jugadores: {canal.mention}")
+        if canal_snapshots: lines.append(f"• Snapshots: {canal_snapshots.mention}")
+        if canal_desafios:  lines.append(f"• Desafíos: {canal_desafios.mention}")
+        if canal_vinculados:lines.append(f"• Vinculados: {canal_vinculados.mention}")
+        if canal_eventos:   lines.append(f"• Eventos: {canal_eventos.mention}")
+        if canal_status:    lines.append(f"• Estado servidor: {canal_status.mention}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
         if canal_vinculados:
             await guild_service.update_vinculados_message(interaction.client, pool, interaction.guild_id)
@@ -358,6 +367,50 @@ def setup_hll(bot: commands.Bot, pool):
         )
         embed.set_footer(text="📊 Stats históricos acumulados")
         await interaction.followup.send(embed=embed)
+
+    # ── /hlladmin minimap ─────────────────────────────────────
+    @admin_group.command(name="minimap", description="Genera el minimapa del mapa actual para calibración")
+    @admin_only()
+    async def minimap_cmd(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        import io as _io
+        from config import CRCON_URL
+        from services.server import generate_minimap, MIN_SAMPLES_FOR_MINIMAP
+        from db.matches import get_map_bounds
+
+        try:
+            info      = await crcon.get_public_info()
+            team_view = await crcon.get_team_view()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error obteniendo datos de CRCON: `{e}`", ephemeral=True)
+            return
+
+        current_map = (info or {}).get("current_map") or {}
+        map_id = (current_map.get("map") or {}).get("id")
+        if not map_id:
+            await interaction.followup.send("❌ No se pudo obtener el mapa actual.", ephemeral=True)
+            return
+
+        async with pool.acquire() as conn:
+            bounds = await get_map_bounds(conn, map_id)
+
+        if not bounds:
+            await interaction.followup.send(f"❌ Sin bounds para `{map_id}` todavía — esperá que el collector acumule más samples.", ephemeral=True)
+            return
+
+        samples = bounds.get("samples", 0)
+        img_bytes = await generate_minimap(team_view, map_id, bounds, CRCON_URL)
+        if not img_bytes:
+            await interaction.followup.send("❌ No se pudo generar el minimapa.", ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            f"🗺️ `{map_id}` — {samples} samples\n"
+            f"X: `{bounds['x_min']:.0f}` → `{bounds['x_max']:.0f}` | "
+            f"Y: `{bounds['y_min']:.0f}` → `{bounds['y_max']:.0f}`",
+            file=discord.File(fp=_io.BytesIO(img_bytes), filename="minimap.png"),
+            ephemeral=True
+        )
 
     # ── /hlladmin armas ───────────────────────────────────────
     @admin_group.command(name="armas", description="Lista todas las armas con kills registrados")

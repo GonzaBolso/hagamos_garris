@@ -9,14 +9,15 @@ log = logging.getLogger(__name__)
 
 # Columnas de match_player_stats que mapean a métricas simples
 METRIC_COLUMN = {
-    "kills":    "kills",
-    "deaths":   "deaths",
-    "matches":  None,       # COUNT DISTINCT
-    "combat":   "combat_score",
-    "offense":  "offense_score",
-    "defense":  "defense_score",
-    "support":  "support_score",
-    "kd_ratio": None,       # calculado
+    "kills":               "kills",
+    "deaths":              "deaths",
+    "matches":             None,       # COUNT DISTINCT
+    "combat":              "combat_score",
+    "offense":             "offense_score",
+    "defense":             "defense_score",
+    "support":             "support_score",
+    "kd_ratio":            None,       # calculado
+    "vehicles_destroyed":  "vehicles_destroyed",
 }
 
 # Columnas JSONB para métricas parametrizadas
@@ -54,9 +55,10 @@ async def insert_player_stats(conn: asyncpg.Connection, match_id: str,
         INSERT INTO match_player_stats
             (match_id, steam_id, player_name, kills, deaths, teamkills,
              combat_score, offense_score, defense_score, support_score, time_seconds,
+             vehicles_destroyed,
              kills_by_type, deaths_by_type, weapons, death_by_weapons,
              most_killed, death_by, most_killed_ids, death_by_ids)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
         ON CONFLICT (match_id, steam_id) DO NOTHING
         """,
         match_id, steam_id, player.get("player", ""),
@@ -68,6 +70,7 @@ async def insert_player_stats(conn: asyncpg.Connection, match_id: str,
         int(player.get("defense") or 0),
         int(player.get("support") or 0),
         time_sec,
+        int(player.get("vehicles_destroyed") or 0),
         json.dumps(player.get("kills_by_type") or {}),
         json.dumps(player.get("deaths_by_type") or {}),
         json.dumps(player.get("weapons") or {}),
@@ -378,3 +381,91 @@ async def fetch_closed_deaths(conn: asyncpg.Connection,
         """,
         *params,
     )
+
+
+async def update_map_bounds(conn: asyncpg.Connection,
+                             map_id: str, positions: list) -> None:
+    """
+    Actualiza los bounds del mapa con las posiciones reales de los jugadores.
+    Ignora posiciones en {0,0,0} (muertos/en spawn sin coordenadas).
+    Usa percentil 5-95 para filtrar outliers de área de spawn.
+    positions: lista de dicts con 'x' e 'y'.
+    """
+    valid = [p for p in positions if not (p["x"] == 0 and p["y"] == 0)]
+    if not valid:
+        return
+
+    xs = sorted(p["x"] for p in valid)
+    ys = sorted(p["y"] for p in valid)
+
+    # Percentil 5-95 para excluir outliers de spawn
+    def percentile(lst, p):
+        idx = max(0, int(len(lst) * p / 100) - 1)
+        return lst[idx]
+
+    x_min = percentile(xs, 5)
+    x_max = percentile(xs, 95)
+    y_min = percentile(ys, 5)
+    y_max = percentile(ys, 95)
+
+    await conn.execute(
+        """
+        INSERT INTO map_bounds (map_id, x_min, x_max, y_min, y_max, samples, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (map_id) DO UPDATE SET
+            x_min      = LEAST(map_bounds.x_min, EXCLUDED.x_min),
+            x_max      = GREATEST(map_bounds.x_max, EXCLUDED.x_max),
+            y_min      = LEAST(map_bounds.y_min, EXCLUDED.y_min),
+            y_max      = GREATEST(map_bounds.y_max, EXCLUDED.y_max),
+            samples    = map_bounds.samples + EXCLUDED.samples,
+            updated_at = NOW()
+        """,
+        map_id, x_min, x_max, y_min, y_max, len(valid),
+    )
+
+
+async def get_map_bounds(conn: asyncpg.Connection, map_id: str) -> dict | None:
+    """Devuelve los bounds de un mapa si están suficientemente calibrados."""
+    row = await conn.fetchrow(
+        "SELECT x_min, x_max, y_min, y_max, samples FROM map_bounds WHERE map_id = $1",
+        map_id,
+    )
+    return dict(row) if row else None
+
+
+# Bounds calibrados manualmente por mapa (esquinas del área jugable)
+# Formato: map_id_prefix -> {x_min, x_max, y_min, y_max}
+MANUAL_MAP_BOUNDS = {
+    "smolensk": {"x_min": -99454, "x_max": 99154, "y_min": -59995, "y_max": 59989},
+}
+
+
+async def seed_manual_bounds(conn: asyncpg.Connection) -> None:
+    """Inserta los bounds calibrados manualmente si no existen o están desactualizados."""
+    for prefix, bounds in MANUAL_MAP_BOUNDS.items():
+        await conn.execute(
+            """
+            INSERT INTO map_bounds (map_id, x_min, x_max, y_min, y_max, samples, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 99999, NOW())
+            ON CONFLICT (map_id) DO UPDATE SET
+                x_min = $2, x_max = $3, y_min = $4, y_max = $5,
+                samples = 99999, updated_at = NOW()
+            WHERE map_bounds.samples < 99999
+            """,
+            prefix + "_warfare", bounds["x_min"], bounds["x_max"],
+            bounds["y_min"], bounds["y_max"],
+        )
+        # También para variantes (offensive, etc.)
+        for suffix in ("_offensive_ger", "_offensive_us", "_warfare_night"):
+            await conn.execute(
+                """
+                INSERT INTO map_bounds (map_id, x_min, x_max, y_min, y_max, samples, updated_at)
+                VALUES ($1, $2, $3, $4, $5, 99999, NOW())
+                ON CONFLICT (map_id) DO UPDATE SET
+                    x_min = $2, x_max = $3, y_min = $4, y_max = $5,
+                    samples = 99999, updated_at = NOW()
+                WHERE map_bounds.samples < 99999
+                """,
+                prefix + suffix, bounds["x_min"], bounds["x_max"],
+                bounds["y_min"], bounds["y_max"],
+            )

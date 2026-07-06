@@ -33,6 +33,7 @@ METRIC_LABELS = {
     "kills_weapon":  "🔫 Kills con arma",
     "kills_player":  "🎯 Kills a jugador",
     "kills_type":    "⚔️ Kills por tipo",
+    "vehicles_destroyed": "🚗 Vehículos destruidos",
 }
 
 METRIC_EMOJIS = {
@@ -250,7 +251,7 @@ async def build_progress_embed(pool, challenge_id: int, guild_id: int):
 
     embed = discord.Embed(
         title=f"🎯 #{challenge_id} — {challenge['name']}",
-        description=f"Condición: {metrics_line}\nPartida: {vence_info}\n\n" + "\n".join(lines),
+        description=f"Condición:\n {metrics_line}\nPartida: {vence_info}\n\n" + "\n".join(lines),
         color=0xF1C40F
     )
     embed.set_footer(text=f"{completed_count} jugador(es) completaron el desafío")
@@ -538,8 +539,27 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         await interaction.followup.send(embed=embed)
 
     # ── /hll desafio progreso ────────────────────────────────
+    async def progreso_autocomplete(interaction: discord.Interaction, current: str):
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name FROM challenges
+                WHERE guild_id = $1 AND active = TRUE
+                  AND (end_date IS NULL OR end_date > NOW())
+                ORDER BY id DESC
+                LIMIT 25
+                """,
+                interaction.guild_id
+            )
+        return [
+            app_commands.Choice(name=f"#{r['id']} — {r['name']}", value=r['id'])
+            for r in rows
+            if current.lower() in r['name'].lower() or current == ""
+        ]
+
     @sub.command(name="progreso", description="Mostrá el ranking de un desafío")
-    @app_commands.describe(id="ID del desafío (usá /hll desafio listar para verlos)")
+    @app_commands.describe(id="Elegí el desafío")
+    @app_commands.autocomplete(id=progreso_autocomplete)
     @player_or_admin()
     async def progreso(interaction: discord.Interaction, id: int):
         await interaction.response.defer()
@@ -671,7 +691,20 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
 
                 # Calcular fechas
                 start_date = end_date = match_id = map_name = map_start = None
-                if periodo == "daily":
+                if periodo == "current_match":
+                    from datetime import datetime, timezone as _tz
+                    start_date = datetime.now(_tz.utc)
+                    end_date = None
+                    try:
+                        info = await crcon_client.get_public_info()
+                        current_map = (info or {}).get("current_map") or {}
+                        map_start = current_map.get("start")
+                        map_name = (current_map.get("map") or {}).get("pretty_name")                             or ((current_map.get("map") or {}).get("map") or {}).get("pretty_name") or "?"
+                    except Exception as e:
+                        raise ValueError(f"No se pudo consultar el servidor: {e}")
+                    if map_start is None:
+                        raise ValueError("No hay partida en curso en este momento")
+                elif periodo == "daily":
                     now = datetime.now(timezone.utc)
                     start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
                     end_date   = start_date + timedelta(days=1)

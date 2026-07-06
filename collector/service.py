@@ -51,14 +51,15 @@ def aggregate_live_stats_by_player(live_result: dict) -> dict:
         if not steam_id:
             continue
         out[steam_id] = {
-            "player_name":   p.get("player", ""),
-            "kills":         int(p.get("kills") or 0),
-            "deaths":        int(p.get("deaths") or 0),
-            "combat":        int(p.get("combat") or 0),
-            "offense":       int(p.get("offense") or 0),
-            "defense":       int(p.get("defense") or 0),
-            "support":       int(p.get("support") or 0),
-            "kills_by_type": p.get("kills_by_type") or {},
+            "player_name":        p.get("player", ""),
+            "kills":              int(p.get("kills") or 0),
+            "deaths":             int(p.get("deaths") or 0),
+            "combat":             int(p.get("combat") or 0),
+            "offense":            int(p.get("offense") or 0),
+            "defense":            int(p.get("defense") or 0),
+            "support":            int(p.get("support") or 0),
+            "kills_by_type":      p.get("kills_by_type") or {},
+            "vehicles_destroyed": int(p.get("vehicles_destroyed") or 0),
         }
     return out
 

@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS match_player_stats (
     offense_score   INT DEFAULT 0,
     defense_score   INT DEFAULT 0,
     support_score   INT DEFAULT 0,
-    time_seconds    INT DEFAULT 0,
+    time_seconds          INT DEFAULT 0,
+    vehicles_destroyed    INT DEFAULT 0,
     -- Breakdowns de kills/deaths por tipo y por arma (de get_map_scoreboard)
     kills_by_type       JSONB DEFAULT '{}',   -- {"infantry":5,"armor":2,...}
     deaths_by_type      JSONB DEFAULT '{}',   -- {"infantry":3,"sniper":1,...}
@@ -191,3 +192,15 @@ CREATE TABLE challenge_progress (
 );
 
 CREATE INDEX idx_progress_challenge ON challenge_progress (challenge_id);
+-- ── Bounds de mapas para minimap (se auto-calibran con partidas reales) ──────
+CREATE TABLE IF NOT EXISTS map_bounds (
+    map_id      VARCHAR(100) PRIMARY KEY,
+    x_min       FLOAT,
+    x_max       FLOAT,
+    y_min       FLOAT,
+    y_max       FLOAT,
+    samples     INT DEFAULT 0,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS vehicles_destroyed INT DEFAULT 0;
