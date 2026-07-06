@@ -18,10 +18,10 @@ async def get_vinculados_embed(pool) -> discord.Embed:
     if rows:
         lines = []
         for r in rows:
-            steam_display = f"{r['steam_name']} " if r['steam_name'] else ""
+            steam_display = f"**{r['steam_name']}**" if r['steam_name'] else f"`{r['steam_id']}`"
             lines.append(
-                f"`{r['discord_name'] or '?'}` — {steam_display}`{r['steam_id']}` "
-                f"_({format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
+                f"`{r['discord_name'] or '?'}` — {steam_display} "
+                f"_(vinculado {format_local(r['linked_at'], '%d/%m/%Y %H:%M')})_"
             )
 
         description = "\n".join(lines)
