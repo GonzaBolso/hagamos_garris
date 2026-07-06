@@ -368,49 +368,6 @@ def setup_hll(bot: commands.Bot, pool):
         embed.set_footer(text="📊 Stats históricos acumulados")
         await interaction.followup.send(embed=embed)
 
-    # ── /hlladmin minimap ─────────────────────────────────────
-    @admin_group.command(name="minimap", description="Genera el minimapa del mapa actual para calibración")
-    @admin_only()
-    async def minimap_cmd(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        import io as _io
-        from config import CRCON_URL
-        from services.server import generate_minimap, MIN_SAMPLES_FOR_MINIMAP
-        from db.matches import get_map_bounds
-
-        try:
-            info      = await crcon.get_public_info()
-            team_view = await crcon.get_team_view()
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error obteniendo datos de CRCON: `{e}`", ephemeral=True)
-            return
-
-        current_map = (info or {}).get("current_map") or {}
-        map_id = (current_map.get("map") or {}).get("id")
-        if not map_id:
-            await interaction.followup.send("❌ No se pudo obtener el mapa actual.", ephemeral=True)
-            return
-
-        async with pool.acquire() as conn:
-            bounds = await get_map_bounds(conn, map_id)
-
-        if not bounds:
-            await interaction.followup.send(f"❌ Sin bounds para `{map_id}` todavía — esperá que el collector acumule más samples.", ephemeral=True)
-            return
-
-        samples = bounds.get("samples", 0)
-        img_bytes = await generate_minimap(team_view, map_id, bounds, CRCON_URL)
-        if not img_bytes:
-            await interaction.followup.send("❌ No se pudo generar el minimapa.", ephemeral=True)
-            return
-
-        await interaction.followup.send(
-            f"🗺️ `{map_id}` — {samples} samples\n"
-            f"X: `{bounds['x_min']:.0f}` → `{bounds['x_max']:.0f}` | "
-            f"Y: `{bounds['y_min']:.0f}` → `{bounds['y_max']:.0f}`",
-            file=discord.File(fp=_io.BytesIO(img_bytes), filename="minimap.png"),
-            ephemeral=True
-        )
 
     # ── /hlladmin armas ───────────────────────────────────────
     @admin_group.command(name="armas", description="Lista todas las armas con kills registrados")

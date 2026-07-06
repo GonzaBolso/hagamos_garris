@@ -218,31 +218,22 @@ def build_team_view_embeds(team_view: dict, allied: int = 0, axis: int = 0) -> l
         squads = team_data.get("squads") or {}
         total  = team_data.get("count", 0)
 
-        for squad_name, squad in sorted(squads.items()):
-            if squad_name == "unassigned":
-                continue
-            players    = squad.get("players") or []
-            has_leader = squad.get("has_leader", False)
-            stype      = squad.get("type", "infantry")
-            emoji      = SQUAD_TYPE_EMOJI.get(stype, "🪖")
-            leader_tag = "👑" if has_leader else "⚠️"
-            names      = ", ".join(
-                f"{p['name']}({ROLE_ABBR.get(p.get('role',''), '??')})"
-                for p in players[:6]
-            ) + ("…" if len(players) > 6 else "")
-            field_name  = f"{emoji} {squad_name.upper()} {leader_tag} ({len(players)})"
-            field_value = names or "—"
-            if len(field_value) > 1024:
-                field_value = field_value[:1020] + "…"
-            embed.add_field(name=field_name, value=field_value, inline=False)
+        all_names = []
+        commander = team_data.get("commander")
+        if commander:
+            all_names.append(f"⭐ {commander.get('name') or commander.get('player', '?')}")
 
-        # Unasignados
-        unassigned = (squads.get("unassigned") or {}).get("players") or []
-        if unassigned:
-            names = ", ".join(p["name"] for p in unassigned[:15])
-            if len(unassigned) > 15:
-                names += f" +{len(unassigned)-15} más"
-            embed.add_field(name=f"❓ Sin escuadrón ({len(unassigned)})", value=names, inline=False)
+        for squad_name, squad in sorted(squads.items()):
+            for p in (squad.get("players") or []):
+                all_names.append(p["name"])
+
+        mid  = (len(all_names) + 1) // 2
+        col1 = "\n".join(all_names[:mid]) or "—"
+        col2 = "\n".join(all_names[mid:]) if all_names[mid:] else None
+
+        embed.add_field(name="Jugadores", value=col1[:1024], inline=True)
+        if col2:
+            embed.add_field(name="\u200b", value=col2[:1024], inline=True)
 
         embed.set_footer(text=f"{total} jugadores")
         return embed
@@ -254,99 +245,3 @@ def build_team_view_embeds(team_view: dict, allied: int = 0, axis: int = 0) -> l
         render_team(allies_data, f"🔵 Aliados — {allied} jugadores", 0x3498DB),
         render_team(axis_data,   f"🔴 Eje — {axis} jugadores",       0xE74C3C),
     ]
-
-
-MIN_SAMPLES_FOR_MINIMAP = 300
-
-
-# Área jugable por mapa en coordenadas de mundo (x_min, x_max, y_min, y_max)
-# Medidas caminando hasta los bordes del mapa jugable
-# Jugadores fuera de este rango están en spawn/artillería y no se dibujan
-MAP_CROPS = {
-    "smolensk": (-99454, 99154, -36000, 36000),  # Y ajustado: filas 3-8 del mapa
-    # Agregar más mapas a medida que se calibren
-}
-
-
-async def generate_minimap(
-    team_view: dict,
-    map_id: str,
-    bounds: dict,
-    crcon_url: str,
-) -> "bytes | None":
-    """
-    Genera un minimapa PNG con los jugadores superpuestos sobre la imagen táctica.
-    Retorna los bytes de la imagen o None si falla.
-    bounds: {x_min, x_max, y_min, y_max, samples}
-    """
-    try:
-        import aiohttp as _aiohttp
-        import io
-        from PIL import Image, ImageDraw
-
-        # Descargar imagen táctica
-        tac_url = f"{crcon_url.rstrip('/')}/tac-maps/{map_id.split('_')[0]}.webp"
-        async with _aiohttp.ClientSession() as session:
-            async with session.get(tac_url, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return None
-                img_bytes = await resp.read()
-
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-        w, h = img.size
-        draw = ImageDraw.Draw(img)
-
-        # Límites del área jugable por mapa (en coordenadas de mundo)
-        # Solo se dibujan jugadores dentro de este rango
-        map_base = map_id.split("_")[0]
-        play_area = MAP_CROPS.get(map_base)  # (x_min, x_max, y_min, y_max) del área jugable
-
-        x_min = bounds["x_min"]
-        x_max = bounds["x_max"]
-        y_min = bounds["y_min"]
-        y_max = bounds["y_max"]
-        x_range = x_max - x_min or 1
-        y_range = y_max - y_min or 1
-
-        def to_px(x, y):
-            px = int((x - x_min) / x_range * w)
-            py = int((y - y_min) / y_range * h)
-            return px, py
-
-
-
-        COLORS = {
-            "allies": (30, 144, 255, 220),   # azul
-            "axis":   (220, 50,  50,  220),   # rojo
-        }
-        DOT_R = max(4, w // 120)
-
-        for team_key, color in COLORS.items():
-            team = (team_view or {}).get(team_key) or {}
-            for squad in (team.get("squads") or {}).values():
-                for player in (squad.get("players") or []):
-                    wp = player.get("world_position") or {}
-                    x, y = wp.get("x", 0), wp.get("y", 0)
-                    if x == 0 and y == 0:
-                        continue
-                    px, py = to_px(x, y)
-                    in_play_area = True
-                    if play_area:
-                        xa, xb, ya, yb = play_area
-                        in_play_area = xa <= x <= xb and ya <= y <= yb
-                    if in_play_area and 0 <= px < w and 0 <= py < h:
-                        draw.ellipse(
-                            [px - DOT_R, py - DOT_R, px + DOT_R, py + DOT_R],
-                            fill=color,
-                            outline=(255, 255, 255, 180),
-                            width=1,
-                        )
-
-        out = io.BytesIO()
-        img.save(out, format="PNG")
-        return out.getvalue()
-
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Error generando minimap: {e}")
-        return None
