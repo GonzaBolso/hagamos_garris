@@ -1,0 +1,89 @@
+{
+  "_notas": {
+    "periodos_validos": [
+      "diario",
+      "semanal",
+      "mensual",
+      "current_match",
+      "next_match",
+      "custom"
+    ],
+    "metricas_validas": [
+      "kills",
+      "deaths",
+      "kd_ratio",
+      "matches",
+      "combat",
+      "offense",
+      "defense",
+      "support",
+      "vehicles_destroyed",
+      "kills_weapon",
+      "kills_player",
+      "kills_type"
+    ],
+    "tipos_kill": [
+      "infantry",
+      "armor",
+      "machine_gun",
+      "sniper",
+      "bazooka",
+      "grenade",
+      "mine",
+      "satchel",
+      "commander",
+      "artillery",
+      "self_propelled_artillery"
+    ],
+    "kills_weapon_requiere": "campo 'arma' con el nombre exacto (usar /hlladmin armas)",
+    "kills_player_requiere": "campo 'steam_id' de la víctima",
+    "kills_type_requiere": "campo 'tipo_kill' con uno de los tipos listados",
+    "custom_requiere": "campos 'inicio' y 'fin' en formato ISO YYYY-MM-DDTHH:MM:SS"
+  },
+  "desafios": [
+    {
+      "nombre": "Semana de Rifles",
+      "periodo": "semanal",
+      "metricas": [
+        { "tipo": "kills_weapon", "arma": "M1 GARAND", "objetivo": 100 },
+        { "tipo": "kills", "objetivo": 200 }
+      ]
+    },
+    {
+      "nombre": "Mata tanques",
+      "periodo": "mensual",
+      "metricas": [
+        { "tipo": "kills_type", "tipo_kill": "armor", "objetivo": 20 },
+        { "tipo": "vehicles_destroyed", "objetivo": 3 }
+      ]
+    },
+    {
+      "nombre": "Partida perfecta",
+      "periodo": "current_match",
+      "metricas": [
+        { "tipo": "kills", "objetivo": 30 },
+        { "tipo": "combat", "objetivo": 500 },
+        { "tipo": "kd_ratio", "objetivo": 2.0 }
+      ]
+    },
+    {
+      "nombre": "Torneo del fin de semana",
+      "periodo": "custom",
+      "inicio": "2026-07-12T00:00:00",
+      "fin": "2026-07-13T23:59:59",
+      "metricas": [
+        { "tipo": "kills", "objetivo": 150 },
+        { "tipo": "kills_weapon", "arma": "MP40", "objetivo": 50 },
+        { "tipo": "kills_weapon", "arma": "BAZOOKA", "objetivo": 10 }
+      ]
+    },
+    {
+      "nombre": "Cazador de élite",
+      "periodo": "semanal",
+      "metricas": [
+        { "tipo": "kills_player", "steam_id": "76561199052198013", "objetivo": 5 },
+        { "tipo": "kills_type", "tipo_kill": "sniper", "objetivo": 30 }
+      ]
+    }
+  ]
+}

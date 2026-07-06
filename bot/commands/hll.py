@@ -468,7 +468,7 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hll top <categoria> [periodo]",     value="Ranking: Kills, K/D, Partidas, etc.", inline=False)
         embed.add_field(name="/hll weapon <arma>",                 value="Top 10 de jugadores con más kills usando esa arma", inline=False)
         embed.add_field(name="/hll desafio listar",                value="Muestra los desafíos activos", inline=False)
-        embed.add_field(name="/hll desafio progreso <id>",         value="Ranking de progreso de un desafío", inline=False)
+        embed.add_field(name="/hll desafio progreso",              value="Ranking de progreso de un desafío (con autocomplete)", inline=False)
         embed.add_field(name="/stats show",                        value="Tus stats acumulados", inline=False)
         embed.add_field(name="/stats games [cantidad]",            value="Tus últimas N partidas", inline=False)
         embed.add_field(name="/stats weapon",                      value="Tus kills con tus armas + Ranking", inline=False)
@@ -491,6 +491,8 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hlladmin desafio metricas",          value="Lista las métricas disponibles", inline=False)
         embed.add_field(name="/hlladmin desafio crear",             value="Crea un desafío configurable", inline=False)
         embed.add_field(name="/hlladmin desafio eliminar <id>",     value="Desactiva un desafío", inline=False)
+        embed.add_field(name="/hlladmin desafio plantilla",         value="Descarga JSON de ejemplo para importar desafíos", inline=False)
+        embed.add_field(name="/hlladmin desafio importar",          value="Crea desafíos en lote desde un archivo JSON", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     return group, admin_group

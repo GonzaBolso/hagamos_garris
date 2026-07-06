@@ -1,57 +1,196 @@
-# BOT Stats Hagamos_garris
-## Pasos:
-- Configurar .env
-1. Configurar canales /hlladmin setchannel #canal:comandos #canal_snapshots:snapshots # :desafios #canal_vinculados:cuentas_vinculadas #canal_eventos:general
-2. Configurar roles /hlladmin setroles [@admin] [@player]
-3. Ver config con /hlladmin config 
+# Hagamos Garris — HLL Discord Bot
 
-## Comandos disponibles para ADMIN
-| Comando                                                    | Descripción                                |
-|------------------------------------------------------------|--------------------------------------------|
-| `/hlladmin help`                                           | Muestra todos los comandos                 |
-| `/hlladmin setroles admin:@TuRolAdmin player:@TuRolPlayer` | Set de Roles ecistentes de admin y Player  |
-| `/hlladmin setchannel #canal`                              | Set de Canal existente para comandos       |
-| `/hlladmin config`                                         | Ver las configuraciones de canales, roles  |
-| `/hlladmin desafio crear`                                  | Crear  desafio                             |
-| `/hlladmin desafio eliminar <id>`                          | Eliminar  desafio                          |
-| `/hlladmin desafio metricas`                               | Ver las metricas existentes para desafios  |
-| `/hlladmin snapshot`                                       | manda el resumen del día, ahora mismo      |
+Bot de Discord + Collector para servidores de **Hell Let Loose** con CRCON.  
+Recolecta estadísticas de partidas, genera rankings, administra desafíos y muestra el estado del servidor en tiempo real.
 
+---
 
-## Comandos disponibles para players
-| Comando                            | Descripción                                   |
-|------------------------------------|-----------------------------------------------|
-| `/hll help`                        | muestra los comandos                          |
-| `/hll registro <steam_id/consola>` | Vincula tu Discord con tu Steam ID            |
-| `/hll perfil`                      | Tu perfil en CRCON (sesiones, horas, VIP)     |
-| `/hll server`                      | Estado del servidor (mapa, jugadores, score)  |
-| `/hll online`                      | Jugadores conectados ahora mismo              |
-| `/hll vip`                         | Verificá si tenés VIP activo                  |
-| `/hll top <categoria>`             | Ranking histórico: Kills, K/D, Partidas, etc. |
-| `/hll weapon`                      | Muestra todas las kills del player con weapon |
-| `/stats show`                      | Tus stats acumulados                          |
-| `/stats games [cantidad]`          | Tus últimas N partidas                        |
-| `/stats weapon`                    | Todas tus armas y kills + Ranking             |
-| `/hll desafio listar`              | Listar Desafios disponibles                   |
-| `/hll desafio progreso <id>`       | Progreso del desafio <id>                     |
+## Arquitectura
 
-### Ejemplos de comandos /hlladmin:
-```sql
-/hlladmin setchannel @canal:a @canal_snapshots:b @canal_desafios:c @canal_vinculados:d @canal_eventos:e
-(obligatorio) #canal - Canal para los comandos de los players
-(Opcional) #canal_snapshots - Canal para los snapshots (Mensajes automáticos)
-(Opcional) #canal_desafios - Canal para los desafios
-(Opcional) #canal_vinculados - Canal para las cuentas vinculadas con /hll registro <--->
-(Opcional) #canal_eventos - Canal para los eventos (Fakeos, ...)
 ```
-### Ejemplos de comandos /hlladmin:
-#### Antes de usar el comando se puede usar ```/hlladmin desafio metricas```sql para ver las metricas disponibles.
-```sql
-/hlladmin desafio crear #nombre:nombre_kills_actual #metricas:kills:10 #periodo:Partida actual
-/hlladmin desafio crear #nombre:nombre_kills_combat #metricas:kills:10,combat:400 #periodo:Partida actual
-/hlladmin desafio crear #nombre:nombre_kills_combat_defense #metricas:kills:10,combat:400,defense:500 #periodo:Partida actual
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   hll-collector │────▶│   PostgreSQL      │◀────│    hll-bot      │
+│  (Python async) │     │  (match stats,    │     │ (discord.py)    │
+└─────────────────┘     │   challenges,     │     └─────────────────┘
+         │              │   players, etc.)  │              │
+         ▼              └──────────────────┘              ▼
+┌─────────────────┐                              ┌─────────────────┐
+│   CRCON API     │                              │  Discord Server  │
+│  (8010 con auth)│                              └─────────────────┘
+└─────────────────┘
+```
 
-/hlladmin desafio crear #nombre:nombre_kills_perzo #metricas:kills:10 #periodo:Personalizado #fecha_inicio:01/07/2026 10:00:00 #fecha_fin:01/07/2026 20:00:00
-/hlladmin desafio crear nombre:Bazuquero metricas:kills_weapon:$ARMA:10 periodo:Partida actual arma:[autocompletado, tipeá "baz" y elegí BAZOOKA]
-/hlladmin desafio crear nombre:Cacería metricas:kills_player:$JUGADOR:5 periodo:Personalizado fecha_fin:01/07/2026 22:00:00 jugador_victima:[autocompletado, tipeá el nombre y elegí]
+---
+
+## Instalación
+
+### Requisitos
+
+- Docker + Docker Compose
+- Servidor CRCON con API key
+- Bot de Discord con permisos: Send Messages, Embed Links, Manage Messages
+
+### Pasos
+
+**1. Clonar y configurar**
+
+```bash
+git clone <repo>
+cd hagamos_garris
+cp .env.example .env
+# Editar .env con tus valores
+```
+
+**2. Crear el bot de Discord**
+
+1. https://discord.com/developers/applications → New Application
+2. Bot → Reset Token → copiar `DISCORD_TOKEN`
+3. OAuth2 → URL Generator → `bot` + `applications.commands` → invitar al servidor
+4. Copiar `GUILD_ID` (ID del servidor, click derecho con Dev Mode activado)
+
+**3. Configurar CRCON**
+
+En CRCON → Settings → API Keys → crear key → copiar en `CRCON_API_KEY`.
+
+**4. Levantar**
+
+```bash
+docker compose up -d --build
+```
+
+**5. Configurar canales en Discord**
+
+```
+/hlladmin setchannel canal:#general-hll
+/hlladmin setchannel canal_snapshots:#stats canal_desafios:#desafios
+/hlladmin setroles @admin:@Admin @player:@Jugador
+```
+
+---
+
+## Comandos
+
+### Jugadores (/hll)
+
+| Comando | Descripción |
+|---|---|
+| `/hll registro <steam_id>` | Vincula tu Discord con tu Steam/Epic ID |
+| `/hll perfil` | Tu perfil: horas, sesiones, nivel, VIP |
+| `/hll server` | Estado del servidor: mapa, score, tiempo restante |
+| `/hll online` | Jugadores conectados ahora mismo |
+| `/hll vip` | Verificá si tenés VIP activo |
+| `/hll top <categoria> [periodo]` | Ranking: Kills, K/D, Partidas, Combat, etc. |
+| `/hll weapon <arma>` | Top 10 jugadores con más kills con esa arma |
+| `/hll desafio listar` | Desafíos activos |
+| `/hll desafio progreso` | Ranking de progreso (autocomplete por nombre) |
+
+### Stats (/stats)
+
+| Comando | Descripción |
+|---|---|
+| `/stats show` | Tus stats acumulados |
+| `/stats games [cantidad]` | Tus últimas N partidas |
+| `/stats weapon` | Tus kills por arma con ranking global |
+
+### Admin (/hlladmin)
+
+| Comando | Descripción |
+|---|---|
+| `/hlladmin setchannel` | Configura canales (jugadores, snapshots, desafíos, vinculados, eventos, status) |
+| `/hlladmin setroles` | Configura roles de admin y player |
+| `/hlladmin config` | Muestra configuración actual |
+| `/hlladmin snapshot [periodo]` | Manda el Top 10 manualmente |
+| `/hlladmin armas` | Descarga .txt con todos los nombres de armas registrados |
+| `/hlladmin desafio metricas` | Lista métricas disponibles |
+| `/hlladmin desafio crear` | Crea un desafío manual |
+| `/hlladmin desafio eliminar` | Desactiva un desafío |
+| `/hlladmin desafio plantilla` | Descarga JSON de ejemplo para importar |
+| `/hlladmin desafio importar` | Crea desafíos en lote desde un JSON |
+
+---
+
+## Desafíos
+
+### Períodos
+
+| Período | Descripción |
+|---|---|
+| `diario` | 00:00 — 23:59 de hoy |
+| `semanal` | Lunes a domingo |
+| `mensual` | Mes calendario |
+| `current_match` | Partida en curso |
+| `next_match` | Próxima partida |
+| `custom` | Rango de fechas libre |
+
+### Métricas
+
+| Métrica | Parámetro extra |
+|---|---|
+| `kills`, `deaths`, `kd_ratio`, `matches` | — |
+| `combat`, `offense`, `defense`, `support` | — |
+| `vehicles_destroyed` | — |
+| `kills_weapon` | `arma: "M1 GARAND"` |
+| `kills_player` | `steam_id: "76561..."` |
+| `kills_type` | `tipo_kill: "infantry"` (ver tipos abajo) |
+
+**Tipos de kill:** `infantry`, `armor`, `machine_gun`, `sniper`, `bazooka`, `grenade`, `mine`, `satchel`, `commander`, `artillery`, `self_propelled_artillery`
+
+### Importar desafíos en lote
+
+```
+/hlladmin desafio plantilla  →  descarga plantilla_desafios.json
+# editar el archivo
+/hlladmin desafio importar archivo:plantilla_desafios.json
+```
+
+Ver también `plantilla_desafios.json` en la raíz del repo como referencia.
+
+---
+
+## Panel de estado del servidor
+
+Se activa con `/hlladmin setchannel canal_status:#canal`.  
+Actualiza automáticamente cada 60 segundos con: mapa actual/próximo, score, votación, jugadores por equipo con commander.
+
+---
+
+## Snapshot automático
+
+Todos los días a las **23:55 hora UY** manda el Top 10 del día al canal de snapshots.  
+Los lunes agrega el semanal. El último día del mes agrega el mensual.
+
+Disparo manual: `/hlladmin snapshot periodo:Día`
+
+---
+
+## Notificaciones de estado
+
+El bot y el collector pueden notificar errores y eventos (conectado/desconectado) a un canal de Discord via webhook.
+
+1. Canal → Editar → Integraciones → Webhooks → Nuevo → copiar URL
+2. Agregar al `.env`: `STATUS_WEBHOOK_URL=https://discord.com/api/webhooks/...`
+
+---
+
+## Estructura del proyecto
+
+```
+hagamos_garris/
+├── collector/
+│   ├── main.py       # Loops: collector, live polling, detector de eventos
+│   ├── service.py    # Lógica: process_maps, desafíos en vivo
+│   ├── db.py         # Queries SQL
+│   ├── crcon.py      # Cliente HTTP CRCON
+│   └── config.py     # Variables de entorno
+├── bot/
+│   ├── main.py       # Bootstrap
+│   ├── commands/     # hll.py, stats.py, challenges.py
+│   ├── services/     # Lógica de negocio
+│   ├── db/           # Queries SQL
+│   └── api/crcon.py  # Cliente CRCON
+├── postgres/
+│   └── init.sql      # Schema
+├── plantilla_desafios.json
+├── .env.example
+└── docker-compose.yml
 ```
