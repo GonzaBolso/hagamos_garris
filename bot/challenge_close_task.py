@@ -73,6 +73,34 @@ async def _notify_closed_challenges(bot, pool):
                 challenge_id
             )
 
+        # Mensaje in-game a los jugadores que completaron el desafío
+        try:
+            async with pool.acquire() as conn:
+                completados = await conn.fetch(
+                    """
+                    SELECT cp.steam_id, lp.discord_id, MAX(p.player_name) AS player_name
+                    FROM challenge_progress cp
+                    LEFT JOIN linked_players lp ON lp.steam_id = cp.steam_id
+                    LEFT JOIN players p ON p.steam_id = cp.steam_id
+                    WHERE cp.challenge_id = $1 AND cp.completed = TRUE
+                    GROUP BY cp.steam_id, lp.discord_id
+                    """,
+                    challenge_id
+                )
+            nombre = challenge["name"] if challenge else f"#{challenge_id}"
+            for p in completados:
+                try:
+                    from api.crcon import crcon
+                    await crcon.message_player(
+                        player_id=p["steam_id"],
+                        player_name=p["player_name"] or p["steam_id"],
+                        message=f"[Desafio #{challenge_id}] {nombre}\nLo completaste! Felicitaciones!"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"  No se pudo mandar mensaje in-game de completado: {e}")
+
 
 def setup_challenge_close_task(bot, pool):
     """
