@@ -18,6 +18,7 @@ from snapshot_task import setup_snapshot_task
 from challenge_close_task import setup_challenge_close_task
 from event_notifier_task import setup_event_notifier_task
 from server_status_task import setup_server_status_task
+from seed_notify_task import setup_seed_notify_task
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -83,6 +84,8 @@ class HLLBot(commands.Bot):
 
         self.server_status_loop = setup_server_status_task(self, self.pool)
         log.info("Tarea de estado del servidor iniciada (cada 60s)")
+        self.seed_notify_loop = setup_seed_notify_task(self, self.pool)
+        log.info("Tarea de notificación de seed iniciada (cada 60s)")
 
     async def on_ready(self):
         log.info(f"Bot conectado como {self.user} (ID: {self.user.id})")
@@ -122,6 +125,8 @@ class HLLBot(commands.Bot):
             self.event_notifier_loop.cancel()
         if hasattr(self, "server_status_loop"):
             self.server_status_loop.cancel()
+        if hasattr(self, "seed_notify_loop"):
+            self.seed_notify_loop.cancel()
         await crcon.close()
         await super().close()
 

@@ -528,9 +528,16 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                             vinculados = [linked]
 
                     # Construir métricas con salto de línea y sin emojis
-                    EMOJI_STRIP = str.maketrans("", "", "🔫🎯⚔️💀🚗🏆")
+                    import re as _re
+                    _emoji_re = _re.compile(
+                        "[\U00010000-\U0010ffff"
+                        "\U0001F300-\U0001F9FF"
+                        "\u2600-\u27BF"
+                        "\uFE00-\uFE0F]+",
+                        flags=_re.UNICODE
+                    )
                     metricas_lines = [
-                        line.translate(EMOJI_STRIP).strip()
+                        _emoji_re.sub("", line).strip()
                         for line in metrics_line.split("\n") if line.strip()
                     ]
                     msg_ingame = (
