@@ -144,3 +144,34 @@ async def set_snapshot_last_fired(conn, date: "datetime.date") -> None:
         "UPDATE guild_config SET snapshot_last_fired = $1 WHERE snapshot_last_fired IS NULL OR snapshot_last_fired < $1",
         date,
     )
+
+async def get_seed_config(conn, guild_id: int):
+    return await conn.fetchrow(
+        """SELECT seed_role_id, seed_channel_id, seed_threshold, seed_last_notified
+           FROM guild_config WHERE guild_id = $1""",
+        guild_id,
+    )
+
+
+async def set_seed_last_notified(conn, guild_id: int) -> None:
+    """Marca hoy como la fecha en que se mandó la notificación de seed."""
+    import datetime
+    await conn.execute(
+        "UPDATE guild_config SET seed_last_notified = $1 WHERE guild_id = $2",
+        datetime.date.today(), guild_id,
+    )
+
+
+async def set_seed_config(conn, guild_id: int,
+                           role_id: int = None, channel_id: int = None,
+                           threshold: int = None) -> None:
+    await conn.execute(
+        """INSERT INTO guild_config (guild_id, seed_role_id, seed_channel_id, seed_threshold)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (guild_id) DO UPDATE SET
+               seed_role_id    = COALESCE($2, guild_config.seed_role_id),
+               seed_channel_id = COALESCE($3, guild_config.seed_channel_id),
+               seed_threshold  = COALESCE($4, guild_config.seed_threshold)
+        """,
+        guild_id, role_id, channel_id, threshold,
+    )

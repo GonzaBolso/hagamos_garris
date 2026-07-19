@@ -94,6 +94,30 @@ def setup_hll(bot: commands.Bot, pool):
             ephemeral=True,
         )
 
+    # ── /hlladmin seed ───────────────────────────────────────────
+    @admin_group.command(name="seed", description="Configura la notificación de seedeo")
+    @app_commands.describe(
+        canal="Canal donde se manda el aviso de seed",
+        umbral="Cantidad de jugadores para disparar la notificación (ej: 40)",
+        rol="Rol a taggear en el aviso (opcional)",
+    )
+    @admin_only()
+    async def seed(interaction: discord.Interaction,
+                   canal: discord.TextChannel,
+                   umbral: int,
+                   rol: discord.Role = None):
+        async with pool.acquire() as conn:
+            await db_guild.set_seed_config(
+                conn, interaction.guild_id,
+                role_id=rol.id if rol else None,
+                channel_id=canal.id,
+                threshold=umbral,
+            )
+        msg = f"✅ Seed configurado:\nCanal: {canal.mention}\nUmbral: {umbral} jugadores"
+        if rol:
+            msg += f"\nRol: {rol.mention}"
+        await interaction.response.send_message(msg, ephemeral=True)
+
     # ── /hlladmin config ────────────────────────────────────────
     @admin_group.command(name="config", description="Muestra la configuración actual")
     @admin_only()

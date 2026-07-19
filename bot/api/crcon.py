@@ -114,6 +114,17 @@ class CRCONClient:
     async def get_team_view(self):
         return await self._get("get_team_view")
 
+    # ── Mensajes y acciones ───────────────────────────────────
+    async def message_player(self, player_id: str, player_name: str, message: str) -> bool:
+        result = await self._post(
+            "message_player",
+            player_id=player_id,
+            player_name=player_name,
+            message=message,
+            reason="",
+        )
+        return bool(result)
+
     # ── VIP ───────────────────────────────────────────────────
     async def get_vip_ids(self):
         return await self._get("get_vip_ids")

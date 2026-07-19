@@ -360,6 +360,7 @@ async def update_challenges_progress(pool: asyncpg.Pool,
 
             player_completion = {}
             player_names      = {}
+            player_values     = {}   # {sid: [(metric, param, value, target)]}
             touched_players   = 0
 
             for metric_row in metrics:
@@ -379,12 +380,47 @@ async def update_challenges_progress(pool: asyncpg.Pool,
                         conn, metric_row["id"], sid, r["player_name"], value, completed
                     )
                     player_completion.setdefault(sid, []).append(completed)
+                    player_values.setdefault(sid, []).append(
+                        (metric_row["metric"], metric_row["param"], value, float(metric_row["target"]))
+                    )
 
             for sid, flags in player_completion.items():
                 all_done = all(flags) and len(flags) == len(metrics)
+                prev = await db.get_challenge_progress(conn, ch["id"], sid)
+                was_done = prev and prev["completed"]
                 await db.upsert_challenge_progress(
                     conn, ch["id"], sid, player_names.get(sid), all_done
                 )
+                # Notificar in-game solo si acaba de completar por primera vez
+                if all_done and not was_done:
+                    is_linked = await db.is_player_linked(conn, sid)
+                    if not is_linked:
+                        continue
+                    try:
+                        # Construir detalle de stats
+                        metric_lines = []
+                        log.info(f"  [completado] player_values para {sid}: {player_values.get(sid, [])}")
+                        for m, p, v, t in player_values.get(sid, []):
+                            vi = int(v) if v == int(v) else round(v, 2)
+                            ti = int(t) if t == int(t) else round(t, 2)
+                            param_txt = f" ({p})" if p else ""
+                            metric_lines.append(f"  {m}{param_txt}: {vi}/{ti}")
+                        stats_txt = "\n".join(metric_lines)
+                        msg = (
+                            f"[Desafio #{ch['id']}] {ch['name']}\n"
+                            f"Lo completaste! Felicitaciones!"
+                            + (f"\n{stats_txt}" if stats_txt else "")
+                            + "\nVer ranking: /hll desafio progreso"
+                        )
+                        ok = await crcon.message_player(
+                            session, sid, player_names.get(sid, sid), msg
+                        )
+                        if ok:
+                            log.info(f"  [completado] mensaje in-game enviado a {player_names.get(sid, sid)} para desafio #{ch['id']}")
+                        else:
+                            log.warning(f"  [completado] message_player devolvió false para {sid}")
+                    except Exception as e:
+                        log.warning(f"  No se pudo mandar mensaje in-game de completado: {e}")
 
             if touched_players:
                 log.info(f"  Desafío '{ch['name']}' (#{ch['id']}): {touched_players} jugadores actualizados")
@@ -436,6 +472,7 @@ async def run_live_progress_update(pool: asyncpg.Pool,
 
             player_completion = {}
             player_names      = {}
+            player_values     = {}
 
             for metric_row in metrics:
                 values = await compute_combined_metric_values(
@@ -452,12 +489,43 @@ async def run_live_progress_update(pool: asyncpg.Pool,
                         conn, metric_row["id"], sid, r["player_name"], value, completed
                     )
                     player_completion.setdefault(sid, []).append(completed)
+                    player_values.setdefault(sid, []).append(
+                        (metric_row["metric"], metric_row["param"], value, float(metric_row["target"]))
+                    )
 
             for sid, flags in player_completion.items():
                 all_done = all(flags) and len(flags) == len(metrics)
+                prev = await db.get_challenge_progress(conn, ch["id"], sid)
+                was_done = prev and prev["completed"]
                 await db.upsert_challenge_progress(
                     conn, ch["id"], sid, player_names.get(sid), all_done
                 )
+                # Notificar in-game solo si acaba de completar por primera vez
+                if all_done and not was_done:
+                    try:
+                        metric_lines = []
+                        log.info(f"  [completado] player_values para {sid}: {player_values.get(sid, [])}")
+                        for m, p, v, t in player_values.get(sid, []):
+                            vi = int(v) if v == int(v) else round(v, 2)
+                            ti = int(t) if t == int(t) else round(t, 2)
+                            param_txt = f" ({p})" if p else ""
+                            metric_lines.append(f"  {m}{param_txt}: {vi}/{ti}")
+                        stats_txt = "\n".join(metric_lines)
+                        msg = (
+                            f"[Desafio #{ch['id']}] {ch['name']}\n"
+                            f"Lo completaste! Felicitaciones!"
+                            + (f"\n{stats_txt}" if stats_txt else "")
+                            + "\nVer ranking: /hll desafio progreso"
+                        )
+                        ok = await crcon.message_player(
+                            session, sid, player_names.get(sid, sid), msg
+                        )
+                        if ok:
+                            log.info(f"  [completado] mensaje in-game enviado a {player_names.get(sid, sid)} para desafio #{ch['id']}")
+                        else:
+                            log.warning(f"  [completado] message_player devolvió false para {sid}")
+                    except Exception as e:
+                        log.warning(f"  No se pudo mandar mensaje in-game de completado: {e}")
 
 
 async def detect_and_notify_events(pool: asyncpg.Pool,
