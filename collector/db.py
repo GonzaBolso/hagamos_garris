@@ -469,3 +469,18 @@ async def seed_manual_bounds(conn: asyncpg.Connection) -> None:
                 prefix + suffix, bounds["x_min"], bounds["x_max"],
                 bounds["y_min"], bounds["y_max"],
             )
+
+async def get_challenge_progress(conn: asyncpg.Connection,
+                                  challenge_id: int, steam_id: str):
+    return await conn.fetchrow(
+        "SELECT completed FROM challenge_progress WHERE challenge_id = $1 AND steam_id = $2",
+        challenge_id, steam_id,
+    )
+
+
+async def is_player_linked(conn: asyncpg.Connection, steam_id: str) -> bool:
+    """Devuelve True si el jugador tiene cuenta vinculada en Discord."""
+    row = await conn.fetchrow(
+        "SELECT 1 FROM linked_players WHERE steam_id = $1", steam_id
+    )
+    return row is not None

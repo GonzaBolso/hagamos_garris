@@ -75,3 +75,19 @@ async def send_webhook(session: aiohttp.ClientSession, message: str) -> None:
                 log.warning(f"Webhook respondió {resp.status}")
     except Exception as e:
         log.warning(f"No se pudo mandar webhook: {e}")
+
+async def message_player(session: aiohttp.ClientSession,
+                          player_id: str, player_name: str, message: str) -> bool:
+    """Manda un mensaje in-game a un jugador via CRCON."""
+    try:
+        async with session.post(
+            f"{config.CRCON_URL}/api/message_player",
+            json={"player_id": player_id, "player_name": player_name,
+                  "message": message, "reason": ""},
+            headers=config.HEADERS,
+        ) as resp:
+            data = await resp.json(content_type=None)
+            return bool(data.get("result", False))
+    except Exception as e:
+        log.warning(f"message_player falló: {e}")
+        return False

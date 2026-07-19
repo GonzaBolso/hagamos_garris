@@ -505,34 +505,49 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                 )
                 embed.add_field(name="Condición", value=metric_bullets, inline=False)
                 embed.add_field(name="Vence", value=vence_hammertime, inline=False)
+                embed.add_field(name="📊 Progreso", value=f"`/hll desafio progreso`", inline=False)
                 embed.set_footer(text=f"#{challenge_id} • {PERIOD_LABELS[periodo.value]}")
 
                 await channel.send(embed=embed)
 
-                # Mensaje in-game al creador si está conectado
+                # Mensaje in-game a todos los vinculados
                 try:
-                    discord_user = interaction.user
                     async with pool.acquire() as pconn:
-                        linked = await pconn.fetchrow(
-                            "SELECT steam_id FROM linked_players WHERE discord_id = $1",
-                            str(discord_user.id)
+                        vinculados = await pconn.fetch(
+                            "SELECT steam_id FROM linked_players"
                         )
-                    if linked:
-                        # Construir mensaje para el juego
-                        metrics_ingame = " | ".join(
-                            line.replace("🔫", "").replace("🎯", "").replace("⚔️", "").replace("💀", "").strip()
-                            for line in metrics_line.split("\n")
-                        )
-                        msg_ingame = (
-                            f"[DESAFIO CREADO] #{challenge_id} — {nombre}\n"
-                            f"{metrics_ingame}\n"
-                            f"Vence: {vence_txt}"
-                        )
-                        await crcon_client.message_player(
-                            player_id=linked["steam_id"],
-                            player_name=str(discord_user.display_name),
-                            message=msg_ingame,
-                        )
+                    if not vinculados:
+                        # Fallback: solo el creador
+                        vinculados = []
+                        async with pool.acquire() as pconn:
+                            linked = await pconn.fetchrow(
+                                "SELECT steam_id FROM linked_players WHERE discord_id = $1",
+                                int(interaction.user.id)
+                            )
+                        if linked:
+                            vinculados = [linked]
+
+                    # Construir métricas con salto de línea y sin emojis
+                    EMOJI_STRIP = str.maketrans("", "", "🔫🎯⚔️💀🚗🏆")
+                    metricas_lines = [
+                        line.translate(EMOJI_STRIP).strip()
+                        for line in metrics_line.split("\n") if line.strip()
+                    ]
+                    msg_ingame = (
+                        f"[Desafio #{challenge_id}] {nombre}\n"
+                        + "\n".join(f"  {l}" for l in metricas_lines) + "\n"
+                        f"Vence: {vence_txt}\n"
+                        f"Ver ranking: /hll desafio progreso"
+                    )
+                    for v in vinculados:
+                        try:
+                            await crcon_client.message_player(
+                                player_id=v["steam_id"],
+                                player_name="",
+                                message=msg_ingame,
+                            )
+                        except Exception:
+                            pass
                 except Exception as e:
                     log.warning(f"No se pudo mandar mensaje in-game: {e}")
             except Exception as e:
@@ -792,70 +807,104 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
-        # Mensaje in-game al creador si está conectado y se creó al menos uno
+        # Notificar al canal de desafíos por cada desafío creado
         if creados:
             try:
                 async with pool.acquire() as conn:
-                    linked = await conn.fetchrow(
-                        "SELECT steam_id FROM linked_players WHERE discord_id = $1",
-                        int(interaction.user.id)
-                    )
-                log.info(f"[importar] discord_id={interaction.user.id} linked={linked}")
-                if linked:
-                    # Construir un mensaje por desafío creado
-                    METRIC_LABELS_SIMPLE = {
-                        "kills": "Kills", "deaths": "Muertes", "kd_ratio": "K/D",
-                        "matches": "Partidas", "combat": "Combat", "offense": "Offense",
-                        "defense": "Defense", "support": "Support",
-                        "vehicles_destroyed": "Vehiculos destruidos",
-                        "kills_weapon": "Kills con arma", "kills_player": "Kills a jugador",
-                        "kills_type": "Kills tipo",
-                    }
-
-                    # Precargar nombres de jugadores para kills_player
-                    all_steam_ids = [
-                        p for c in creados
-                        for m, p, t in c["metricas"]
-                        if m == "kills_player" and p
-                    ]
-                    player_names = {}
-                    if all_steam_ids:
-                        async with pool.acquire() as conn:
-                            rows = await conn.fetch(
-                                "SELECT steam_id, player_name FROM players WHERE steam_id = ANY($1)",
-                                all_steam_ids
-                            )
-                            player_names = {r["steam_id"]: r["player_name"] for r in rows}
-
-                    bloques = []
+                    channel_id = await db_challenges.get_guild_challenge_channel(conn, interaction.guild_id)
+                if channel_id:
+                    channel = interaction.client.get_channel(channel_id) or \
+                              await interaction.client.fetch_channel(channel_id)
                     for c in creados:
-                        vence = format_local(c["end_date"], "%d/%m %H:%M") if c["end_date"] else (c["map_name"] or "Partida actual")
-                        metricas_lines = []
-                        for m, p, t in c["metricas"]:
-                            label = METRIC_LABELS_SIMPLE.get(m, m)
-                            obj   = int(t) if t == int(t) else t
-                            param_txt = ""
-                            if p:
-                                # Para kills_player mostrar nombre en vez de steam_id
-                                if m == "kills_player":
-                                    param_txt = f" ({player_names.get(p, p)})"
-                                else:
-                                    param_txt = f" ({p})"
-                            metricas_lines.append(f"  {label}: {obj}{param_txt}")
-                        bloques.append(
-                            f"[Desafio #{c['id']}] {c['nombre']}\n"
-                            + "\n".join(metricas_lines) + "\n"
-                            f"Vence: {vence}"
+                        vence_hammertime = (
+                            f"<t:{int(c['end_date'].timestamp())}:F> (<t:{int(c['end_date'].timestamp())}:R>)"
+                            if c["end_date"] else (c["map_name"] or "Partida actual")
                         )
-                    msg_ingame = "\n---\n".join(bloques)
-                    log.info(f"[importar] mandando message_player a steam_id={linked['steam_id']}")
-                    result = await crcon_client.message_player(
-                        player_id=linked["steam_id"],
-                        player_name=str(interaction.user.display_name),
-                        message=msg_ingame,
+                        metric_bullets = "\n".join(
+                            f"• {METRIC_LABELS.get(m, m)}"
+                            + (f" ≥ {int(t) if t == int(t) else t}" if t else "")
+                            + (f" ({p})" if p else "")
+                            for m, p, t in c["metricas"]
+                        )
+                        embed = discord.Embed(
+                            title=f"🎯 Nuevo desafío — {c['nombre']}",
+                            color=0x5865F2
+                        )
+                        embed.add_field(name="Condición", value=metric_bullets, inline=False)
+                        embed.add_field(name="Vence", value=vence_hammertime, inline=False)
+                        embed.set_footer(text=f"#{c['id']} • {PERIOD_LABELS.get(c['periodo'], c['periodo'])}")
+                        await channel.send(embed=embed)
+            except Exception as e:
+                log.warning(f"No se pudo notificar el canal de desafíos (importar): {e}")
+        if creados:
+            try:
+                async with pool.acquire() as conn:
+                    vinculados = await conn.fetch(
+                        "SELECT steam_id FROM linked_players"
                     )
-                    log.info(f"[importar] message_player result={result}")
-                else:
-                    log.info(f"[importar] usuario no vinculado, no se manda mensaje in-game")
+                if not vinculados:
+                    linked = None
+                    async with pool.acquire() as conn:
+                        linked = await conn.fetchrow(
+                            "SELECT steam_id FROM linked_players WHERE discord_id = $1",
+                            int(interaction.user.id)
+                        )
+                    vinculados = [linked] if linked else []
+
+                METRIC_LABELS_SIMPLE = {
+                    "kills": "Kills", "deaths": "Muertes", "kd_ratio": "K/D",
+                    "matches": "Partidas", "combat": "Combat", "offense": "Offense",
+                    "defense": "Defense", "support": "Support",
+                    "vehicles_destroyed": "Vehiculos destruidos",
+                    "kills_weapon": "Kills con arma", "kills_player": "Kills a jugador",
+                    "kills_type": "Kills tipo",
+                }
+
+                all_steam_ids = [
+                    p for c in creados
+                    for m, p, t in c["metricas"]
+                    if m == "kills_player" and p
+                ]
+                player_names = {}
+                if all_steam_ids:
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT steam_id, player_name FROM players WHERE steam_id = ANY($1)",
+                            all_steam_ids
+                        )
+                        player_names = {r["steam_id"]: r["player_name"] for r in rows}
+
+                bloques = []
+                for c in creados:
+                    vence = format_local(c["end_date"], "%d/%m %H:%M") if c["end_date"] else (c["map_name"] or "Partida actual")
+                    metricas_lines = []
+                    for m, p, t in c["metricas"]:
+                        label = METRIC_LABELS_SIMPLE.get(m, m)
+                        obj   = int(t) if t == int(t) else t
+                        param_txt = ""
+                        if p:
+                            if m == "kills_player":
+                                param_txt = f" ({player_names.get(p, p)})"
+                            else:
+                                param_txt = f" ({p})"
+                        metricas_lines.append(f"  {label}: {obj}{param_txt}")
+                    bloques.append(
+                        f"[Desafio #{c['id']}] {c['nombre']}\n"
+                        + "\n".join(metricas_lines) + "\n"
+                        f"Vence: {vence}\n"
+                        f"Ver ranking: /hll desafio progreso"
+                    )
+                msg_ingame = "\n---\n".join(bloques)
+
+                for v in vinculados:
+                    try:
+                        await crcon_client.message_player(
+                            player_id=v["steam_id"],
+                            player_name="",
+                            message=msg_ingame,
+                        )
+                    except Exception:
+                        pass
+                log.info(f"[importar] mensaje in-game enviado a {len(vinculados)} vinculado(s)")
             except Exception as e:
                 log.warning(f"No se pudo mandar mensaje in-game (importar): {e}", exc_info=True)
