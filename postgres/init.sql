@@ -206,3 +206,7 @@ CREATE TABLE IF NOT EXISTS map_bounds (
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS vehicles_destroyed INT DEFAULT 0;
 
 ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS snapshot_last_fired DATE;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_role_id BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_channel_id BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_threshold INT DEFAULT 40;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_last_notified DATE;

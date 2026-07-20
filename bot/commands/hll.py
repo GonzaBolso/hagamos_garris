@@ -141,13 +141,28 @@ def setup_hll(bot: commands.Bot, pool):
             return interaction.guild.get_role(rid).mention if rid else "No configurado"
 
         embed = discord.Embed(title="⚙️ Configuración del Bot", color=0x5865F2)
-        embed.add_field(name="Canal jugadores",  value=ch("stats_channel_id"),      inline=False)
-        embed.add_field(name="Canal snapshots",  value=ch("snapshot_channel_id"),   inline=False)
-        embed.add_field(name="Canal desafíos",   value=ch("challenge_channel_id"),  inline=False)
-        embed.add_field(name="Canal vinculados", value=ch("vinculados_channel_id"), inline=False)
-        embed.add_field(name="Canal eventos",    value=ch("eventos_channel_id"),    inline=False)
-        embed.add_field(name="Rol Admin",        value=role("admin_role_id"),       inline=True)
-        embed.add_field(name="Rol Player",       value=role("mod_role_id"),         inline=True)
+
+        # Canales
+        embed.add_field(name="Canal jugadores",       value=ch("stats_channel_id"),          inline=False)
+        embed.add_field(name="Canal snapshots",       value=ch("snapshot_channel_id"),        inline=False)
+        embed.add_field(name="Canal desafíos",        value=ch("challenge_channel_id"),       inline=False)
+        embed.add_field(name="Canal vinculados",      value=ch("vinculados_channel_id"),      inline=False)
+        embed.add_field(name="Canal eventos",         value=ch("eventos_channel_id"),         inline=False)
+        embed.add_field(name="Canal status servidor", value=ch("server_status_channel_id"),   inline=False)
+
+        # Roles
+        embed.add_field(name="Rol Admin",  value=role("admin_role_id"), inline=True)
+        embed.add_field(name="Rol Player", value=role("mod_role_id"),   inline=True)
+        embed.add_field(name="\u200b",     value="\u200b",              inline=True)
+
+        # Seed
+        seed_ch    = ch("seed_channel_id")
+        seed_role  = role("seed_role_id")
+        seed_thr   = row.get("seed_threshold") or "No configurado"
+        embed.add_field(name="🌱 Seed — Canal",   value=seed_ch,            inline=True)
+        embed.add_field(name="🌱 Seed — Umbral",  value=f"{seed_thr} jugadores" if isinstance(seed_thr, int) else seed_thr, inline=True)
+        embed.add_field(name="🌱 Seed — Rol",     value=seed_role,          inline=True)
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /hll registro ─────────────────────────────────────────
