@@ -264,6 +264,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
 
     # ── /hlladmin desafio metricas ─────────────────────────────
     @admin_sub.command(name="metricas", description="Lista las métricas disponibles para crear desafíos")
+    @admin_only()
     async def metricas_cmd(interaction: discord.Interaction):
         lines = [f"`{key}` — {label}" for key, label in METRIC_LABELS.items()]
         embed = discord.Embed(

@@ -434,6 +434,7 @@ def setup_hll(bot: commands.Bot, pool):
 
     # ── /hlladmin armas ───────────────────────────────────────
     @admin_group.command(name="armas", description="Lista todas las armas con kills registrados")
+    @admin_only()
     async def armas(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
