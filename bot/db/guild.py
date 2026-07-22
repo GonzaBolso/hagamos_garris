@@ -154,11 +154,11 @@ async def get_seed_config(conn, guild_id: int):
 
 
 async def set_seed_last_notified(conn, guild_id: int) -> None:
-    """Marca hoy como la fecha en que se mandó la notificación de seed."""
-    import datetime
+    """Guarda el timestamp actual de la notificación de seed."""
+    from datetime import datetime, timezone
     await conn.execute(
         "UPDATE guild_config SET seed_last_notified = $1 WHERE guild_id = $2",
-        datetime.date.today(), guild_id,
+        datetime.now(timezone.utc), guild_id,
     )
 
 

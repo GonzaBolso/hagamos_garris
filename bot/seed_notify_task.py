@@ -38,22 +38,32 @@ def setup_seed_notify_task(bot, pool):
             player_count = (info or {}).get("player_count", 0)
             max_players  = (info or {}).get("max_player_count", 100)
 
-            import datetime
-            today = datetime.date.today()
+            from datetime import datetime, timezone
+            from zoneinfo import ZoneInfo
+            TZ_UY = ZoneInfo("America/Montevideo")
+            now_uy = datetime.now(TZ_UY)
 
             for row in configs:
                 guild_id    = row["guild_id"]
                 threshold   = row["seed_threshold"]
-                last_date   = row["seed_last_notified"]
+                last_ts     = row["seed_last_notified"]
                 channel_id  = row["seed_channel_id"]
                 role_id     = row["seed_role_id"]
 
-                # Solo notificar si el servidor llegó al umbral
-                # y no se mandó ninguna notificación hoy
+                # Solo notificar si llegó al umbral
                 if player_count < threshold:
                     continue
-                if last_date and last_date >= today:
+
+                # Solo notificar entre las 5:00 y las 23:59 hora UY
+                if not (5 <= now_uy.hour <= 23):
                     continue
+
+                # No notificar si ya se mandó hoy después de las 5am UY
+                if last_ts:
+                    last_uy = last_ts.astimezone(TZ_UY)
+                    # Misma fecha calendario Y enviado después de las 5am
+                    if last_uy.date() == now_uy.date() and last_uy.hour >= 5:
+                        continue
 
                 # Cruzó el umbral — mandar notificación
                 channel = bot.get_channel(channel_id)
