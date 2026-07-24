@@ -31,8 +31,8 @@ def setup_seed_notify_task(bot, pool):
 
             try:
                 info = await crcon.get_public_info()
-            except CRCONError as e:
-                log.warning(f"[seed] CRCON error: {e}")
+            except Exception as e:
+                log.warning(f"[seed] CRCON no disponible: {e}")
                 return
 
             player_count = (info or {}).get("player_count", 0)
@@ -55,14 +55,14 @@ def setup_seed_notify_task(bot, pool):
                     continue
 
                 # Solo notificar entre las 5:00 y las 23:59 hora UY
-                if not (5 <= now_uy.hour <= 23):
+                if not (6 <= now_uy.hour <= 23):
                     continue
 
                 # No notificar si ya se mandó hoy después de las 5am UY
                 if last_ts:
                     last_uy = last_ts.astimezone(TZ_UY)
                     # Misma fecha calendario Y enviado después de las 5am
-                    if last_uy.date() == now_uy.date() and last_uy.hour >= 5:
+                    if last_uy.date() == now_uy.date() and last_uy.hour >= 6:
                         continue
 
                 # Cruzó el umbral — mandar notificación
