@@ -116,17 +116,26 @@ async def _notify_closed_challenges(bot, pool):
                     for p in completados_vip:
                         sid = p["steam_id"]
                         try:
-                            # Si ya tiene VIP, extender desde esa fecha; sino desde ahora
                             existing_exp = current_vips.get(sid)
-                            if existing_exp:
+
+                            # VIP permanente (null o "never") — no tocar
+                            if existing_exp in (None, "never", ""):
+                                if existing_exp is None and sid not in current_vips:
+                                    # No tiene VIP — dar desde ahora
+                                    base = datetime.now(timezone.utc)
+                                else:
+                                    # Tiene VIP permanente — no hacer nada
+                                    log.info(f"  VIP permanente detectado para {p['player_name']}, no se modifica")
+                                    continue
+
+                            else:
+                                # Tiene VIP con fecha — extender desde esa fecha
                                 try:
                                     base = datetime.fromisoformat(existing_exp.replace("Z", "+00:00"))
                                     if base < datetime.now(timezone.utc):
                                         base = datetime.now(timezone.utc)
                                 except Exception:
                                     base = datetime.now(timezone.utc)
-                            else:
-                                base = datetime.now(timezone.utc)
 
                             new_exp = (base + timedelta(days=vip_dias)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                             desc    = f"-Desafio- {p['player_name']}"

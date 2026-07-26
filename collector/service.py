@@ -420,7 +420,7 @@ async def update_challenges_progress(pool: asyncpg.Pool,
                             f"[Desafio #{ch['id']}] {ch['name']}\n"
                             f"Lo completaste! Felicitaciones!"
                             + (f"\n{stats_txt}" if stats_txt else "")
-                            + "\nVer ranking en Discord: /hll desafio progreso"
+                            + "\nVer ranking: /hll desafio progreso"
                         )
                         ok = await crcon.message_player(
                             session, sid, player_names.get(sid, sid), msg
@@ -510,8 +510,11 @@ async def run_live_progress_update(pool: asyncpg.Pool,
                 await db.upsert_challenge_progress(
                     conn, ch["id"], sid, player_names.get(sid), all_done
                 )
-                # Notificar in-game solo si acaba de completar por primera vez
+                # Notificar in-game solo si acaba de completar por primera vez y está vinculado
                 if all_done and not was_done:
+                    is_linked = await db.is_player_linked(conn, sid)
+                    if not is_linked:
+                        continue
                     try:
                         metric_lines = []
                         log.info(f"  [completado] player_values para {sid}: {player_values.get(sid, [])}")

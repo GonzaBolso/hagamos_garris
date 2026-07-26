@@ -432,6 +432,106 @@ def setup_hll(bot: commands.Bot, pool):
         await interaction.followup.send(embed=embed)
 
 
+    # ── /hlladmin mensajes ───────────────────────────────────
+    mensajes_group = app_commands.Group(
+        name="mensajes",
+        description="Mensajes automáticos in-game",
+        parent=admin_group,
+    )
+
+    @mensajes_group.command(name="plantilla", description="Descarga el JSON de mensajes actual (o ejemplo si no hay)")
+    @admin_only()
+    async def mensajes_plantilla(interaction: discord.Interaction):
+        import io, json as _json
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT activo, intervalo_min, mensajes FROM auto_messages WHERE guild_id = $1",
+                interaction.guild_id
+            )
+
+        if row:
+            data = {
+                "config": {
+                    "activo": row["activo"],
+                    "intervalo_minutos": row["intervalo_min"],
+                },
+                "mensajes": row["mensajes"] or []
+            }
+        else:
+            data = {
+                "config": {
+                    "activo": True,
+                    "intervalo_minutos": 15
+                },
+                "mensajes": [
+                    {"activo": True,  "texto": "Recordá jugar en escuadrón para ganar más puntos!"},
+                    {"activo": True,  "texto": "¿Sabías que podés ver tus stats en Discord con /stats show?"},
+                    {"activo": True,  "texto": "¡Seguí las reglas del servidor! Gracias por jugar con nosotros."},
+                    {"activo": False, "texto": "Este mensaje está desactivado — cambiá activo a true para activarlo."}
+                ]
+            }
+
+        content = _json.dumps(data, ensure_ascii=False, indent=2)
+        file = discord.File(fp=io.BytesIO(content.encode()), filename="mensajes.json")
+        await interaction.response.send_message(
+            "📄 Editá el archivo y subilo con `/hlladmin mensajes subir`.",
+            file=file,
+            ephemeral=True
+        )
+
+    @mensajes_group.command(name="subir", description="Sube el JSON de mensajes automáticos")
+    @app_commands.describe(archivo="Archivo mensajes.json")
+    @admin_only()
+    async def mensajes_subir(interaction: discord.Interaction, archivo: discord.Attachment):
+        import io, json as _json
+        await interaction.response.defer(ephemeral=True)
+
+        if not archivo.filename.endswith(".json"):
+            await interaction.followup.send("❌ El archivo debe ser un `.json`.", ephemeral=True)
+            return
+
+        try:
+            raw  = await archivo.read()
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error leyendo el archivo: `{e}`", ephemeral=True)
+            return
+
+        config   = data.get("config") or {}
+        activo   = bool(config.get("activo", True))
+        intervalo = int(config.get("intervalo_minutos", 15))
+        mensajes = data.get("mensajes") or []
+
+        if not isinstance(mensajes, list):
+            await interaction.followup.send("❌ `mensajes` debe ser una lista.", ephemeral=True)
+            return
+
+        import json as _json2
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO auto_messages (guild_id, activo, intervalo_min, mensajes, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (guild_id) DO UPDATE SET
+                    activo        = $2,
+                    intervalo_min = $3,
+                    mensajes      = $4,
+                    updated_at    = NOW()
+                """,
+                interaction.guild_id, activo, intervalo, _json.dumps(mensajes, ensure_ascii=False)
+            )
+
+        activos = sum(1 for m in mensajes if m.get("activo"))
+        estado  = "✅ Activo" if activo else "⏸️ Pausado"
+        await interaction.followup.send(
+            f"📨 Mensajes configurados:\n"
+            f"Estado: {estado}\n"
+            f"Intervalo: cada {intervalo} minutos\n"
+            f"Mensajes activos: {activos}/{len(mensajes)}",
+            ephemeral=True
+        )
+
     # ── /hlladmin armas ───────────────────────────────────────
     @admin_group.command(name="armas", description="Lista todas las armas con kills registrados")
     @admin_only()
@@ -533,6 +633,8 @@ def setup_hll(bot: commands.Bot, pool):
         embed.add_field(name="/hlladmin desafio eliminar <id>",     value="Desactiva un desafío", inline=False)
         embed.add_field(name="/hlladmin desafio plantilla",         value="Descarga JSON de ejemplo para importar desafíos", inline=False)
         embed.add_field(name="/hlladmin desafio importar",          value="Crea desafíos en lote desde un archivo JSON", inline=False)
+        embed.add_field(name="/hlladmin mensajes plantilla",        value="Descarga el JSON de mensajes automáticos actual", inline=False)
+        embed.add_field(name="/hlladmin mensajes subir",            value="Sube el JSON de mensajes automáticos in-game", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     return group, admin_group
