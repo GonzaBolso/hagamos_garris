@@ -85,29 +85,30 @@ async def create_challenge(conn: asyncpg.Connection,
                             start_date, end_date, match_id,
                             created_by: int,
                             map_name: str = None,
-                            map_start=None) -> int:
+                            map_start=None,
+                            premio_vip_dias: int = 0) -> int:
     if map_name is not None:
         row = await conn.fetchrow(
             """
             INSERT INTO challenges
                 (guild_id, name, description, period, start_date, end_date,
-                 match_id, created_by, map_name, map_start)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 match_id, created_by, map_name, map_start, premio_vip_dias)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id
             """,
             guild_id, name, None, period,
-            start_date, end_date, match_id, created_by, map_name, map_start,
+            start_date, end_date, match_id, created_by, map_name, map_start, premio_vip_dias,
         )
     else:
         row = await conn.fetchrow(
             """
             INSERT INTO challenges
-                (guild_id, name, description, period, start_date, end_date, match_id, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (guild_id, name, description, period, start_date, end_date, match_id, created_by, premio_vip_dias)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
             guild_id, name, None, period,
-            start_date, end_date, match_id, created_by,
+            start_date, end_date, match_id, created_by, premio_vip_dias,
         )
     return row["id"]
 

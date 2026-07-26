@@ -652,9 +652,30 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
             {
                 "nombre": "Semana de Rifles",
                 "periodo": "semanal",
+                "premio_vip_dias": 7,
+                "excluir_roles": ["armycommander", "artillery", "tankcommander", "crewman", "spotter"],
                 "metricas": [
                     {"tipo": "kills_weapon", "arma": "M1 GARAND", "objetivo": 100},
                     {"tipo": "kills", "objetivo": 200}
+                ]
+            },
+            {
+                "nombre": "Rifles de cada equipo",
+                "periodo": "current_match",
+                "premio_vip_dias": 3,
+                "excluir_roles": ["armycommander", "artillery", "tankcommander", "crewman", "spotter"],
+                "metricas": [
+                    {
+                        "tipo": "kills_weapon",
+                        "armas": ["M1 GARAND", "GEWEHR 43", "SVT 40"],
+                        "objetivo": 30,
+                        "comentario": "armas equivalentes de aliados/eje — se suman"
+                    },
+                    {
+                        "tipo": "kills_weapon",
+                        "armas": ["MP40", "M1A1 THOMPSON", "PPSh-41"],
+                        "objetivo": 20
+                    }
                 ]
             },
             {
@@ -680,10 +701,14 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
         notas = {
             "_notas": {
                 "periodos_validos": ["diario", "semanal", "mensual", "current_match", "next_match", "custom"],
-                "metricas_validas": ["kills", "deaths", "kd_ratio", "matches", "combat", "offense", "defense", "support", "kills_weapon", "kills_player", "kills_type"],
+                "metricas_validas": ["kills", "deaths", "kd_ratio", "matches", "combat", "offense", "defense", "support", "vehicles_destroyed", "kills_weapon", "kills_player", "kills_type"],
                 "tipos_kill_validos": ["infantry", "armor", "machine_gun", "sniper", "bazooka", "grenade", "mine", "satchel", "commander", "artillery", "self_propelled_artillery"],
+                "roles_validos": ["officer", "rifleman", "assault", "automaticrifleman", "medic", "support", "heavymachinegunner", "antitank", "engineer", "tankcommander", "crewman", "sniper", "spotter", "armycommander", "artillery"],
+                "excluir_roles": "opcional — lista de roles a ignorar en el desafío",
+                "premio_vip_dias": "opcional — días de VIP a dar a los que completen (0 = sin premio, se extiende si ya tienen VIP)",
+                "armas": "opcional — lista de armas cuyas kills se suman (en vez de 'arma' para una sola)",
                 "custom_requiere": "inicio y fin en formato ISO (YYYY-MM-DDTHH:MM:SS)",
-                "kills_weapon_requiere": "campo 'arma' con el nombre exacto (usar /hlladmin armas para ver la lista)",
+                "kills_weapon_requiere": "campo 'arma' (una sola) o 'armas' (lista que se suma) con nombre exacto — usar /hlladmin armas",
                 "kills_player_requiere": "campo 'steam_id' de la víctima",
                 "kills_type_requiere": "campo 'tipo_kill'"
             },
@@ -735,6 +760,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                 inicio  = d.get("inicio")
                 fin     = d.get("fin")
                 metricas = d.get("metricas") or []
+                premio_vip_dias = int(d.get("premio_vip_dias", 0) or 0)
 
                 if not metricas:
                     raise ValueError("Sin métricas")
@@ -778,7 +804,12 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                     tipo = m.get("tipo")
                     obj  = float(m.get("objetivo", 0))
                     if tipo == "kills_weapon":
-                        param = m.get("arma")
+                        # Soportar "arma" (una) o "armas" (lista que se suma con |)
+                        armas = m.get("armas")
+                        if armas and isinstance(armas, list):
+                            param = "|".join(a.strip() for a in armas if a.strip())
+                        else:
+                            param = m.get("arma")
                     elif tipo == "kills_player":
                         param = m.get("steam_id")
                     elif tipo == "kills_type":
@@ -792,6 +823,7 @@ def setup_challenges(hll_group: app_commands.Group, admin_group: app_commands.Gr
                         challenge_id = await db_challenges.create_challenge(
                             conn, interaction.guild_id, nombre, periodo,
                             start_date, end_date, match_id, interaction.user.id,
+                            premio_vip_dias=premio_vip_dias,
                             **({} if periodo != "current_match" else {"map_name": map_name, "map_start": map_start})
                         )
                         for metric, param, target in parsed_metrics:

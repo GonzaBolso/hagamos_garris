@@ -244,26 +244,40 @@ async def fetch_metric_values(conn: asyncpg.Connection, metric: str,
         if not param:
             return []
         jsonb_col = JSONB_COLUMN[metric]
+
+        # Soportar múltiples armas separadas por "|" (ej: "M1 GARAND|GEWEHR 43")
+        weapons = [w.strip() for w in param.split("|") if w.strip()]
+
         if match_ids is not None:
             where_clause = "mps.match_id = ANY($1::varchar[])"
-            params = [match_ids, param]
-            param_n = 2
+            base_params = [match_ids]
+            param_offset = 2
         else:
             where_clause = "m.start_time BETWEEN $1 AND $2"
-            params = [start_date, end_date, param]
-            param_n = 3
+            base_params = [start_date, end_date]
+            param_offset = 3
+
+        # Sumar kills de todas las armas
+        sum_expr = " + ".join(
+            f"COALESCE((mps.{jsonb_col}->>${param_offset + i})::int, 0)"
+            for i in range(len(weapons))
+        )
+        any_expr = " OR ".join(
+            f"mps.{jsonb_col} ? ${param_offset + i}"
+            for i in range(len(weapons))
+        )
         query = f"""
             SELECT mps.steam_id,
                    COALESCE(MAX(p.player_name), MAX(mps.player_name)) AS player_name,
-                   COALESCE(SUM((mps.{jsonb_col}->>${param_n})::int), 0) AS value
+                   COALESCE(SUM({sum_expr}), 0) AS value
             FROM match_player_stats mps
             JOIN matches m USING (match_id)
             LEFT JOIN players p ON p.steam_id = mps.steam_id
             WHERE {where_clause}
-              AND mps.{jsonb_col} ? ${param_n}
+              AND ({any_expr})
             GROUP BY mps.steam_id
         """
-        return await conn.fetch(query, *params)
+        return await conn.fetch(query, *base_params, *weapons)
 
     col = METRIC_COLUMN.get(metric)
 
@@ -299,6 +313,8 @@ async def fetch_metric_values(conn: asyncpg.Connection, metric: str,
             GROUP BY mps.steam_id
         """
     else:
+        if col is None:
+            return []
         query = f"""
             SELECT mps.steam_id,
                    COALESCE(MAX(p.player_name), MAX(mps.player_name)) AS player_name,

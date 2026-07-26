@@ -185,6 +185,17 @@ async def compute_combined_metric_values(conn: asyncpg.Connection,
             live_source = live_kills_by_player
 
         all_steam_ids = set(closed_by_player) | set(live_source)
+
+        # Soportar múltiples armas separadas por "|"
+        if metric in ("kills_weapon", "kills_player") and param and "|" in param:
+            weapons = [w.strip() for w in param.split("|") if w.strip()]
+            def get_live_value(sid):
+                d = live_source.get(sid, {}).get(live_field, {})
+                return sum(d.get(w, 0) for w in weapons)
+        else:
+            def get_live_value(sid):
+                return live_source.get(sid, {}).get(live_field, {}).get(param, 0)
+
         return [
             {
                 "steam_id":   sid,
@@ -193,8 +204,7 @@ async def compute_combined_metric_values(conn: asyncpg.Connection,
                     or live_source.get(sid, {}).get("player_name")
                     or sid
                 ),
-                "value": closed_by_player.get(sid, 0)
-                         + live_source.get(sid, {}).get(live_field, {}).get(param, 0),
+                "value": closed_by_player.get(sid, 0) + get_live_value(sid),
             }
             for sid in all_steam_ids
         ]
@@ -410,7 +420,7 @@ async def update_challenges_progress(pool: asyncpg.Pool,
                             f"[Desafio #{ch['id']}] {ch['name']}\n"
                             f"Lo completaste! Felicitaciones!"
                             + (f"\n{stats_txt}" if stats_txt else "")
-                            + "\nVer ranking: /hll desafio progreso"
+                            + "\nVer ranking en Discord: /hll desafio progreso"
                         )
                         ok = await crcon.message_player(
                             session, sid, player_names.get(sid, sid), msg

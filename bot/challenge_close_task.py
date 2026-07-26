@@ -42,6 +42,7 @@ async def _notify_closed_challenges(bot, pool):
         challenge_id = row["id"]
         guild_id = row["guild_id"]
         channel_id = row["challenge_channel_id"]
+        vip_dias = 0  # se carga más abajo
 
         channel = bot.get_channel(channel_id)
         if channel is None:
@@ -73,17 +74,87 @@ async def _notify_closed_challenges(bot, pool):
                 challenge_id
             )
 
-        # Mensaje in-game a los jugadores que completaron el desafío
+        # Dar VIP a los que completaron (si el desafío tiene premio_vip_dias)
+        try:
+            async with pool.acquire() as conn:
+                ch_data = await conn.fetchrow(
+                    "SELECT name, premio_vip_dias FROM challenges WHERE id = $1",
+                    challenge_id
+                )
+                vip_dias = (ch_data or {}).get("premio_vip_dias") or 0
+
+            if vip_dias > 0:
+                async with pool.acquire() as conn:
+                    completados_vip = await conn.fetch(
+                        """
+                        SELECT cp.steam_id, COALESCE(MAX(p.player_name), cp.steam_id) AS player_name
+                        FROM challenge_progress cp
+                        JOIN linked_players lp ON lp.steam_id = cp.steam_id
+                        LEFT JOIN players p ON p.steam_id = cp.steam_id
+                        WHERE cp.challenge_id = $1 AND cp.completed = TRUE
+                        GROUP BY cp.steam_id
+                        """,
+                        challenge_id
+                    )
+
+                if completados_vip:
+                    from api.crcon import crcon
+                    from datetime import datetime, timezone, timedelta
+                    import json as _json
+
+                    # Obtener VIPs actuales para extender si ya tienen
+                    current_vips = {}
+                    try:
+                        vip_list = await crcon.get_vip_ids() or []
+                        for v in vip_list:
+                            current_vips[v.get("player_id")] = v.get("expiration")
+                    except Exception:
+                        pass
+
+                    nombre_desafio = (ch_data or {}).get("name", f"#{challenge_id}")
+
+                    for p in completados_vip:
+                        sid = p["steam_id"]
+                        try:
+                            # Si ya tiene VIP, extender desde esa fecha; sino desde ahora
+                            existing_exp = current_vips.get(sid)
+                            if existing_exp:
+                                try:
+                                    base = datetime.fromisoformat(existing_exp.replace("Z", "+00:00"))
+                                    if base < datetime.now(timezone.utc):
+                                        base = datetime.now(timezone.utc)
+                                except Exception:
+                                    base = datetime.now(timezone.utc)
+                            else:
+                                base = datetime.now(timezone.utc)
+
+                            new_exp = (base + timedelta(days=vip_dias)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                            desc    = f"-Desafio- {p['player_name']}"
+
+                            ok = await crcon.add_vip(
+                                player_id=sid,
+                                player_name=p["player_name"],
+                                expiration=new_exp,
+                                description=desc,
+                            )
+                            if ok:
+                                log.info(f"  VIP +{vip_dias}d dado a {p['player_name']} (#{challenge_id})")
+                            else:
+                                log.warning(f"  add_vip devolvió false para {sid}")
+                        except Exception as e:
+                            log.warning(f"  Error dando VIP a {sid}: {e}")
+        except Exception as e:
+            log.warning(f"  Error procesando VIP del desafío #{challenge_id}: {e}")
         try:
             async with pool.acquire() as conn:
                 completados = await conn.fetch(
                     """
-                    SELECT cp.steam_id, lp.discord_id, MAX(p.player_name) AS player_name
+                    SELECT cp.steam_id, MAX(p.player_name) AS player_name
                     FROM challenge_progress cp
-                    LEFT JOIN linked_players lp ON lp.steam_id = cp.steam_id
+                    JOIN linked_players lp ON lp.steam_id = cp.steam_id
                     LEFT JOIN players p ON p.steam_id = cp.steam_id
                     WHERE cp.challenge_id = $1 AND cp.completed = TRUE
-                    GROUP BY cp.steam_id, lp.discord_id
+                    GROUP BY cp.steam_id
                     """,
                     challenge_id
                 )
@@ -95,6 +166,7 @@ async def _notify_closed_challenges(bot, pool):
                         player_id=p["steam_id"],
                         player_name=p["player_name"] or p["steam_id"],
                         message=f"[Desafio #{challenge_id}] {nombre}\nLo completaste! Felicitaciones!"
+                        + (f"\nPremio: +{vip_dias} dias de VIP!" if vip_dias > 0 else "")
                     )
                 except Exception:
                     pass

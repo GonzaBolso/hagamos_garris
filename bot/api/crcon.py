@@ -42,7 +42,7 @@ class CRCONClient:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with self._session.request(method, url, **kwargs) as resp:
-                    data = await resp.json()
+                    data = await resp.json(content_type=None)
                     log.debug(f"{method} {url} -> failed={data.get('failed')} error={data.get('error')}")
                     if data.get("failed"):
                         raise CRCONError(data.get("error", endpoint))
@@ -128,6 +128,17 @@ class CRCONClient:
     # ── VIP ───────────────────────────────────────────────────
     async def get_vip_ids(self):
         return await self._get("get_vip_ids")
+
+    async def add_vip(self, player_id: str, player_name: str,
+                      expiration: str, description: str = "") -> bool:
+        result = await self._post(
+            "add_vip",
+            player_id=player_id,
+            description=description,
+            expiration=expiration,
+            forward=False,
+        )
+        return bool(result)
 
 
 crcon = CRCONClient()
