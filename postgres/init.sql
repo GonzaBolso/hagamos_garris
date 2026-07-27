@@ -6,21 +6,18 @@ CREATE TABLE IF NOT EXISTS linked_players (
     linked_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ── Jugadores conocidos (steam_id + nombre más reciente) ──────
--- Se llena/actualiza automáticamente cada vez que el collector procesa
--- una partida. Se usa para el autocompletado por nombre en
--- /hlladmin desafio crear (parámetro jugador_victima).
+-- ── Jugadores conocidos ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS players (
     steam_id          VARCHAR(64) PRIMARY KEY,
     player_name       VARCHAR(100),
-    last_match_start  TIMESTAMPTZ  -- fecha de la partida más reciente que actualizó este nombre
+    last_match_start  TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_players_name ON players (player_name);
 
--- ── Partidas procesadas por el collector ──────────────────────
+-- ── Partidas procesadas ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS matches (
-    match_id        VARCHAR(64) PRIMARY KEY,   -- ID único que da CRCON
+    match_id        VARCHAR(64) PRIMARY KEY,
     map_name        VARCHAR(100),
     start_time      TIMESTAMPTZ,
     end_time        TIMESTAMPTZ,
@@ -31,35 +28,34 @@ CREATE TABLE IF NOT EXISTS matches (
 
 -- ── Stats por jugador por partida ─────────────────────────────
 CREATE TABLE IF NOT EXISTS match_player_stats (
-    id              SERIAL PRIMARY KEY,
-    match_id        VARCHAR(64) REFERENCES matches(match_id) ON DELETE CASCADE,
-    steam_id        VARCHAR(64) NOT NULL,
-    player_name     VARCHAR(100),
-    kills           INT DEFAULT 0,
-    deaths          INT DEFAULT 0,
-    teamkills       INT DEFAULT 0,
-    combat_score    INT DEFAULT 0,
-    offense_score   INT DEFAULT 0,
-    defense_score   INT DEFAULT 0,
-    support_score   INT DEFAULT 0,
-    time_seconds          INT DEFAULT 0,
-    vehicles_destroyed    INT DEFAULT 0,
-    -- Breakdowns de kills/deaths por tipo y por arma (de get_map_scoreboard)
-    kills_by_type       JSONB DEFAULT '{}',   -- {"infantry":5,"armor":2,...}
-    deaths_by_type      JSONB DEFAULT '{}',   -- {"infantry":3,"sniper":1,...}
-    weapons             JSONB DEFAULT '{}',   -- {"M1 GARAND":36,"M1A1 THOMPSON":24}
-    death_by_weapons    JSONB DEFAULT '{}',   -- {"GEWEHR 43":5,"KARABINER 98K":3}
-    most_killed         JSONB DEFAULT '{}',   -- {"Guaiko":3,"NahuO1":1}
-    death_by            JSONB DEFAULT '{}',   -- {"Wolf-77":2,"timy.co":4}
-    most_killed_ids     JSONB DEFAULT '{}',   -- {"76561198..":3} -- steam_id de victimas
-    death_by_ids        JSONB DEFAULT '{}',   -- {"76561198..":2} -- steam_id de asesinos
+    id                  SERIAL PRIMARY KEY,
+    match_id            VARCHAR(64) REFERENCES matches(match_id) ON DELETE CASCADE,
+    steam_id            VARCHAR(64) NOT NULL,
+    player_name         VARCHAR(100),
+    kills               INT DEFAULT 0,
+    deaths              INT DEFAULT 0,
+    teamkills           INT DEFAULT 0,
+    combat_score        INT DEFAULT 0,
+    offense_score       INT DEFAULT 0,
+    defense_score       INT DEFAULT 0,
+    support_score       INT DEFAULT 0,
+    time_seconds        INT DEFAULT 0,
+    vehicles_destroyed  INT DEFAULT 0,
+    kills_by_type       JSONB DEFAULT '{}',
+    deaths_by_type      JSONB DEFAULT '{}',
+    weapons             JSONB DEFAULT '{}',
+    death_by_weapons    JSONB DEFAULT '{}',
+    most_killed         JSONB DEFAULT '{}',
+    death_by            JSONB DEFAULT '{}',
+    most_killed_ids     JSONB DEFAULT '{}',
+    death_by_ids        JSONB DEFAULT '{}',
     UNIQUE (match_id, steam_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_mps_steam ON match_player_stats (steam_id);
 CREATE INDEX IF NOT EXISTS idx_mps_match ON match_player_stats (match_id);
 
--- Migracion para bases existentes: agregar columnas JSONB si no existen
+-- Migraciones para BDs existentes
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS kills_by_type    JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS deaths_by_type   JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS weapons          JSONB DEFAULT '{}';
@@ -68,9 +64,9 @@ ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS most_killed      JSONB D
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by         JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS most_killed_ids  JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by_ids     JSONB DEFAULT '{}';
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS vehicles_destroyed INT DEFAULT 0;
 
-
--- ── Vista: stats acumulados por jugador (para /hll top) ───────
+-- ── Vista: stats acumulados ───────────────────────────────────
 CREATE OR REPLACE VIEW player_totals AS
 SELECT
     mps.steam_id,
@@ -93,33 +89,38 @@ GROUP BY mps.steam_id, p.player_name;
 
 -- ── Configuración del servidor de Discord ─────────────────────
 CREATE TABLE IF NOT EXISTS guild_config (
-    guild_id                BIGINT PRIMARY KEY,
-    stats_channel_id        BIGINT,             -- canal donde los jugadores usan comandos
-    snapshot_channel_id     BIGINT,             -- canal de los Top diarios/semanales/mensuales automáticos
-    challenge_channel_id    BIGINT,             -- canal donde se manda la foto final al cerrar un desafío
-    vinculados_channel_id   BIGINT,             -- canal privado con la lista de vinculados Discord<->Steam
-    vinculados_message_id   BIGINT,             -- mensaje fijo que se edita con la lista, en ese canal
-    eventos_channel_id      BIGINT,             -- canal de eventos destacados en vivo (fakeos con melee, etc.)
-    server_status_channel_id BIGINT,            -- canal con el panel de estado del servidor (se edita en lugar)
-    server_status_message_id BIGINT,            -- ID del mensaje del panel (para editarlo)
-    log_channel_id          BIGINT,
-    admin_role_id           BIGINT,
-    mod_role_id             BIGINT,
-    language                VARCHAR(5) DEFAULT 'es',
-    created_at              TIMESTAMPTZ DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ DEFAULT NOW()
+    guild_id                 BIGINT PRIMARY KEY,
+    stats_channel_id         BIGINT,
+    snapshot_channel_id      BIGINT,
+    challenge_channel_id     BIGINT,
+    vinculados_channel_id    BIGINT,
+    vinculados_message_id    BIGINT,
+    eventos_channel_id       BIGINT,
+    server_status_channel_id BIGINT,
+    server_status_message_id BIGINT,
+    log_channel_id           BIGINT,
+    admin_role_id            BIGINT,
+    mod_role_id              BIGINT,
+    seed_role_id             BIGINT,
+    seed_channel_id          BIGINT,
+    seed_threshold           INT DEFAULT 40,
+    seed_last_notified       TIMESTAMPTZ,
+    snapshot_last_fired      DATE,
+    language                 VARCHAR(5) DEFAULT 'es',
+    created_at               TIMESTAMPTZ DEFAULT NOW(),
+    updated_at               TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ── Sistema de desafíos con múltiples métricas (AND) ──────────
--- Si ya existían las tablas viejas, las recreamos desde cero.
-DROP TABLE IF EXISTS challenge_progress CASCADE;
-DROP TABLE IF EXISTS challenge_metric_progress CASCADE;
-DROP TABLE IF EXISTS challenge_metrics CASCADE;
-DROP TABLE IF EXISTS challenges CASCADE;
+-- Migraciones guild_config
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS server_status_channel_id BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS server_status_message_id BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_role_id             BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_channel_id          BIGINT;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_threshold           INT DEFAULT 40;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_last_notified       TIMESTAMPTZ;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS snapshot_last_fired      DATE;
 
--- ── Eventos destacados detectados en vivo (fakeos con melee, etc.) ──
--- El collector detecta y encola; el bot revisa y notifica a Discord en
--- el canal eventos_channel_id (mismo patrón que el cierre de desafíos).
+-- ── Eventos detectados en vivo ────────────────────────────────
 CREATE TABLE IF NOT EXISTS detected_events (
     id          SERIAL PRIMARY KEY,
     guild_id    BIGINT NOT NULL,
@@ -131,40 +132,45 @@ CREATE TABLE IF NOT EXISTS detected_events (
 
 CREATE INDEX IF NOT EXISTS idx_detected_events_pending ON detected_events (guild_id, notified);
 
+-- ── Sistema de desafíos ───────────────────────────────────────
+DROP TABLE IF EXISTS challenge_progress CASCADE;
+DROP TABLE IF EXISTS challenge_metric_progress CASCADE;
+DROP TABLE IF EXISTS challenge_metrics CASCADE;
+DROP TABLE IF EXISTS challenges CASCADE;
+
 CREATE TABLE challenges (
     id                          SERIAL PRIMARY KEY,
     guild_id                    BIGINT NOT NULL,
     name                        VARCHAR(150) NOT NULL,
     description                 VARCHAR(500),
-    period                      VARCHAR(15) NOT NULL,   -- 'custom' | 'current_match'
-    start_date                  TIMESTAMPTZ,            -- fecha de inicio (custom: al crearlo; current_match: cuando arrancó el mapa)
-    end_date                    TIMESTAMPTZ,            -- fecha de fin fija, solo para 'custom' (NULL en current_match)
-    match_id                    VARCHAR(64),            -- se completa cuando la partida de un current_match cierra
-    anchor_map_start            BIGINT,                 -- histórico/sin uso actual; se deja por compatibilidad con desafíos viejos
-    map_name                    VARCHAR(150),           -- nombre del mapa que sigue un current_match (ej: 'Utah Beach Warfare')
-    map_start                   BIGINT,                 -- timestamp epoch de inicio de ese mapa
+    period                      VARCHAR(15) NOT NULL,
+    start_date                  TIMESTAMPTZ,
+    end_date                    TIMESTAMPTZ,
+    match_id                    VARCHAR(64),
+    anchor_map_start            BIGINT,
+    map_name                    VARCHAR(150),
+    map_start                   BIGINT,
     active                      BOOLEAN DEFAULT TRUE,
     notify_ingame               BOOLEAN DEFAULT FALSE,
-    pending_close_notification  BOOLEAN DEFAULT FALSE,  -- el collector la prende al cerrar; el bot la apaga tras notificar
-    closed_at                   TIMESTAMPTZ,            -- momento exacto del cierre (para descartar notificaciones tras 30 min sin canal configurado)
+    pending_close_notification  BOOLEAN DEFAULT FALSE,
+    closed_at                   TIMESTAMPTZ,
     created_by                  BIGINT,
+    premio_vip_dias             INT DEFAULT 0,
     created_at                  TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_challenges_active ON challenges (guild_id, active);
 
--- Cada desafío tiene 1 o más métricas; TODAS deben cumplirse (AND)
 CREATE TABLE challenge_metrics (
     id              SERIAL PRIMARY KEY,
     challenge_id    INT REFERENCES challenges(id) ON DELETE CASCADE,
-    metric          VARCHAR(30) NOT NULL,   -- 'kills','kd_ratio','matches','combat','offense','defense','support','kills_weapon','kills_player'
+    metric          VARCHAR(30) NOT NULL,
     target          NUMERIC NOT NULL,
-    param           VARCHAR(150)            -- arma exacta (kills_weapon) o steam_id de víctima (kills_player); NULL para el resto
+    param           VARCHAR(150)
 );
 
 CREATE INDEX idx_metrics_challenge ON challenge_metrics (challenge_id);
 
--- Progreso de cada jugador POR métrica
 CREATE TABLE challenge_metric_progress (
     id                  SERIAL PRIMARY KEY,
     challenge_metric_id INT REFERENCES challenge_metrics(id) ON DELETE CASCADE,
@@ -178,7 +184,6 @@ CREATE TABLE challenge_metric_progress (
 
 CREATE INDEX idx_metric_progress ON challenge_metric_progress (challenge_metric_id, steam_id);
 
--- Estado consolidado por jugador y desafío (completed = TRUE solo si TODAS las métricas lo están)
 CREATE TABLE challenge_progress (
     id              SERIAL PRIMARY KEY,
     challenge_id    INT REFERENCES challenges(id) ON DELETE CASCADE,
@@ -192,21 +197,15 @@ CREATE TABLE challenge_progress (
 );
 
 CREATE INDEX idx_progress_challenge ON challenge_progress (challenge_id);
--- ── Bounds de mapas para minimap (se auto-calibran con partidas reales) ──────
-CREATE TABLE IF NOT EXISTS map_bounds (
-    map_id      VARCHAR(100) PRIMARY KEY,
-    x_min       FLOAT,
-    x_max       FLOAT,
-    y_min       FLOAT,
-    y_max       FLOAT,
-    samples     INT DEFAULT 0,
-    updated_at  TIMESTAMPTZ DEFAULT NOW()
+
+-- Migración: premio_vip_dias en challenges
+ALTER TABLE challenges ADD COLUMN IF NOT EXISTS premio_vip_dias INT DEFAULT 0;
+
+-- ── Mensajes automáticos in-game ──────────────────────────────
+CREATE TABLE IF NOT EXISTS auto_messages (
+    guild_id        BIGINT PRIMARY KEY,
+    activo          BOOLEAN DEFAULT TRUE,
+    intervalo_min   INT DEFAULT 15,
+    mensajes        JSONB DEFAULT '[]'::jsonb,
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
-
-ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS vehicles_destroyed INT DEFAULT 0;
-
-ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS snapshot_last_fired DATE;
-ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_role_id BIGINT;
-ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_channel_id BIGINT;
-ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_threshold INT DEFAULT 40;
-ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_last_notified DATE;

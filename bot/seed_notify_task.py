@@ -58,11 +58,10 @@ def setup_seed_notify_task(bot, pool):
                 if not (6 <= now_uy.hour <= 23):
                     continue
 
-                # No notificar si ya se mandó hoy después de las 5am UY
+                # No notificar si ya se mandó hoy (en hora UY), sin importar la hora
                 if last_ts:
                     last_uy = last_ts.astimezone(TZ_UY)
-                    # Misma fecha calendario Y enviado después de las 5am
-                    if last_uy.date() == now_uy.date() and last_uy.hour >= 6:
+                    if last_uy.date() == now_uy.date():
                         continue
 
                 # Cruzó el umbral — mandar notificación
