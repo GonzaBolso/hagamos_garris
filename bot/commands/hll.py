@@ -446,7 +446,7 @@ def setup_hll(bot: commands.Bot, pool):
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT activo, intervalo_min, mensajes FROM auto_messages WHERE guild_id = $1",
+                "SELECT activo, modo, intervalo_min, mensajes FROM auto_messages WHERE guild_id = $1",
                 interaction.guild_id
             )
 
@@ -454,6 +454,7 @@ def setup_hll(bot: commands.Bot, pool):
             data = {
                 "config": {
                     "activo": row["activo"],
+                    "modo": row["modo"] or "evento",
                     "intervalo_minutos": row["intervalo_min"],
                 },
                 "mensajes": row["mensajes"] or []
@@ -462,6 +463,7 @@ def setup_hll(bot: commands.Bot, pool):
             data = {
                 "config": {
                     "activo": True,
+                    "modo": "evento",
                     "intervalo_minutos": 15
                 },
                 "mensajes": [
@@ -475,7 +477,8 @@ def setup_hll(bot: commands.Bot, pool):
         content = _json.dumps(data, ensure_ascii=False, indent=2)
         file = discord.File(fp=io.BytesIO(content.encode()), filename="mensajes.json")
         await interaction.response.send_message(
-            "📄 Editá el archivo y subilo con `/hlladmin mensajes subir`.",
+            "📄 Editá el archivo y subilo con `/hlladmin mensajes subir`.\n"
+            "`modo`: `evento` (al inicio y al final de cada partida) o `intervalo` (cada `intervalo_minutos`).",
             file=file,
             ephemeral=True
         )
@@ -500,34 +503,42 @@ def setup_hll(bot: commands.Bot, pool):
 
         config   = data.get("config") or {}
         activo   = bool(config.get("activo", True))
+        modo     = str(config.get("modo", "evento")).strip().lower()
         intervalo = int(config.get("intervalo_minutos", 15))
         mensajes = data.get("mensajes") or []
+
+        if modo not in ("evento", "intervalo"):
+            await interaction.followup.send(
+                "❌ `modo` debe ser `evento` o `intervalo`.", ephemeral=True
+            )
+            return
 
         if not isinstance(mensajes, list):
             await interaction.followup.send("❌ `mensajes` debe ser una lista.", ephemeral=True)
             return
 
-        import json as _json2
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO auto_messages (guild_id, activo, intervalo_min, mensajes, updated_at)
-                VALUES ($1, $2, $3, $4, NOW())
+                INSERT INTO auto_messages (guild_id, activo, modo, intervalo_min, mensajes, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (guild_id) DO UPDATE SET
                     activo        = $2,
-                    intervalo_min = $3,
-                    mensajes      = $4,
+                    modo          = $3,
+                    intervalo_min = $4,
+                    mensajes      = $5,
                     updated_at    = NOW()
                 """,
-                interaction.guild_id, activo, intervalo, _json.dumps(mensajes, ensure_ascii=False)
+                interaction.guild_id, activo, modo, intervalo, _json.dumps(mensajes, ensure_ascii=False)
             )
 
         activos = sum(1 for m in mensajes if m.get("activo"))
         estado  = "✅ Activo" if activo else "⏸️ Pausado"
+        disparo = "al inicio/final de cada partida" if modo == "evento" else f"cada {intervalo} minutos"
         await interaction.followup.send(
             f"📨 Mensajes configurados:\n"
             f"Estado: {estado}\n"
-            f"Intervalo: cada {intervalo} minutos\n"
+            f"Disparo: {disparo}\n"
             f"Mensajes activos: {activos}/{len(mensajes)}",
             ephemeral=True
         )

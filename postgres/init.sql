@@ -205,7 +205,11 @@ ALTER TABLE challenges ADD COLUMN IF NOT EXISTS premio_vip_dias INT DEFAULT 0;
 CREATE TABLE IF NOT EXISTS auto_messages (
     guild_id        BIGINT PRIMARY KEY,
     activo          BOOLEAN DEFAULT TRUE,
+    modo            TEXT DEFAULT 'evento',  -- 'evento' (MATCH START/ENDED) | 'intervalo' (cada N minutos)
     intervalo_min   INT DEFAULT 15,
     mensajes        JSONB DEFAULT '[]'::jsonb,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migración: modo de disparo (evento vs intervalo) en auto_messages
+ALTER TABLE auto_messages ADD COLUMN IF NOT EXISTS modo TEXT DEFAULT 'evento';

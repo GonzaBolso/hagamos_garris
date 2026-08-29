@@ -114,6 +114,17 @@ class CRCONClient:
     async def get_team_view(self):
         return await self._get("get_team_view")
 
+    async def get_recent_logs(self, limit: int = 50, action: str = ""):
+        result = await self._post(
+            "get_recent_logs",
+            end=limit,
+            filter_action=[action] if action else [],
+            filter_player=[],
+            exact_action=bool(action),
+            inclusive_filter=True,
+        )
+        return (result or {}).get("logs") or []
+
     # ── Mensajes y acciones ───────────────────────────────────
     async def message_player(self, player_id: str, player_name: str, message: str) -> bool:
         result = await self._post(
