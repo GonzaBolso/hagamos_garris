@@ -1,7 +1,8 @@
 """
 auto_message_task.py — Manda mensajes automáticos a todos los jugadores conectados.
 Modo configurable por guild via /hlladmin mensajes subir (campo "modo" del JSON):
-  - "evento":    dispara al INICIO y al FINAL de cada partida (MATCH START / MATCH ENDED).
+  - "evento":    dispara al INICIO y al FINAL de cada partida (MATCH START / MATCH ENDED),
+                 detectados via get_historical_logs (filtrado en CRCON, no por ventana de log).
   - "intervalo": dispara cada N minutos (intervalo_minutos), como el comportamiento original.
 """
 import json
@@ -15,12 +16,8 @@ from api import crcon, CRCONError
 
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 30  # cada cuánto se chequea (logs de CRCON y vencimiento de intervalos)
+CHECK_INTERVAL_SECONDS = 30  # cada cuánto se chequea (historial de CRCON y vencimiento de intervalos)
 MATCH_EVENT_ACTIONS = ("MATCH START", "MATCH ENDED")
-
-
-def _event_key(ev: dict) -> str:
-    return f"{ev.get('action')}|{ev.get('timestamp_ms')}|{ev.get('message')}"
 
 
 def _active_texts(mensajes) -> list:
@@ -31,8 +28,7 @@ def _active_texts(mensajes) -> list:
 
 def setup_auto_message_task(bot, pool):
 
-    seen_keys = set()
-    state = {"primed": False}  # primer ciclo: solo registra eventos existentes, no manda nada
+    last_seen_id = {action: None for action in MATCH_EVENT_ACTIONS}  # None = todavía sin primear
     last_sent = {}  # guild_id -> datetime del último envío, solo para modo "intervalo"
 
     async def _broadcast(texto: str, players: list) -> int:
@@ -66,22 +62,29 @@ def setup_auto_message_task(bot, pool):
             if event_configs:
                 for action in MATCH_EVENT_ACTIONS:
                     try:
-                        events = await crcon.get_recent_logs(limit=20, action=action)
+                        entries = await crcon.get_historical_logs(action=action, limit=10)
                     except Exception as e:
-                        log.warning(f"[auto_msg] No se pudo obtener logs ({action}): {e}")
+                        log.warning(f"[auto_msg] No se pudo obtener historial ({action}): {e}")
                         continue
 
-                    for ev in events:
-                        if ev.get("action") != action:
-                            continue
-                        key = _event_key(ev)
-                        if key in seen_keys:
-                            continue
-                        seen_keys.add(key)
-                        if state["primed"]:
-                            new_events.append((action, ev))
+                    if not entries:
+                        continue
 
-                state["primed"] = True
+                    max_id = max(e.get("id", 0) for e in entries)
+                    seen_before = last_seen_id[action]
+
+                    if seen_before is None:
+                        # primer ciclo: solo primea el cursor, no dispara retroactivamente
+                        last_seen_id[action] = max_id
+                        continue
+
+                    nuevos = sorted(
+                        (e for e in entries if e.get("id", 0) > seen_before),
+                        key=lambda e: e.get("id", 0)
+                    )
+                    if nuevos:
+                        last_seen_id[action] = max_id
+                        new_events.extend((action, e) for e in nuevos)
 
             now = datetime.now(timezone.utc)
             due_intervalo = []
@@ -105,7 +108,7 @@ def setup_auto_message_task(bot, pool):
                 return
 
             for action, ev in new_events:
-                log.info(f"[auto_msg] Evento detectado: {action} — {ev.get('message', '')[:80]}")
+                log.info(f"[auto_msg] Evento detectado: {action} — {ev.get('content', '')[:80]}")
                 for row in event_configs:
                     activos = _active_texts(row["mensajes"])
                     if not activos:

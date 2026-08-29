@@ -114,16 +114,20 @@ class CRCONClient:
     async def get_team_view(self):
         return await self._get("get_team_view")
 
-    async def get_recent_logs(self, limit: int = 50, action: str = ""):
+    async def get_historical_logs(self, action: str = "", limit: int = 10, time_sort: str = "desc"):
+        """Log histórico persistido en CRCON, filtrado en el server (no escanea líneas crudas)."""
         result = await self._post(
-            "get_recent_logs",
-            end=limit,
-            filter_action=[action] if action else [],
-            filter_player=[],
+            "get_historical_logs",
+            player_name="",
+            action=action,
+            player_id="",
+            **{"from": None, "till": None},
+            limit=limit,
+            time_sort=time_sort,
+            exact_player=False,
             exact_action=bool(action),
-            inclusive_filter=True,
         )
-        return (result or {}).get("logs") or []
+        return result or []
 
     # ── Mensajes y acciones ───────────────────────────────────
     async def message_player(self, player_id: str, player_name: str, message: str) -> bool:
