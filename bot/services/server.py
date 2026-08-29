@@ -57,8 +57,8 @@ def build_server_state_from_public_info(info: dict, slots: dict) -> dict:
     vote_status = (info or {}).get("vote_status") or []
     votes = [
         {
-            "map_name": v.get("map", {}).get("pretty_name", "?"),
-            "votes":    len(v.get("voters") or []),
+            "map_name": v.get("map", {}).get("pretty_name", "?") if isinstance(v, dict) else str(v),
+            "votes":    len(v.get("voters") or []) if isinstance(v, dict) else 0,
         }
         for v in vote_status
     ]
