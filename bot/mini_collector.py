@@ -94,14 +94,15 @@ async def collect_new_matches(crcon_client, pool, max_pages: int = 2) -> int:
                         if name in name_to_id
                     }
 
+                    team_side = (p.get("team") or {}).get("side")
                     await conn.execute(
                         """
                         INSERT INTO match_player_stats
                             (match_id, steam_id, player_name, kills, deaths, teamkills,
                              combat_score, offense_score, defense_score, support_score, time_seconds,
                              kills_by_type, deaths_by_type, weapons, death_by_weapons,
-                             most_killed, death_by, most_killed_ids, death_by_ids)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                             most_killed, death_by, most_killed_ids, death_by_ids, team)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
                         ON CONFLICT (match_id, steam_id) DO NOTHING
                         """,
                         match_id, steam_id, p.get("player", ""),
@@ -117,6 +118,7 @@ async def collect_new_matches(crcon_client, pool, max_pages: int = 2) -> int:
                         json.dumps(p.get("death_by") or {}),
                         json.dumps(most_killed_ids),
                         json.dumps(death_by_ids),
+                        team_side,
                     )
 
                 log.info(f"  [mini_collector] Nueva: [{match_id}] {map_name}")

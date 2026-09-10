@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 30  # cada cuánto se chequea (historial de CRCON y vencimiento de intervalos)
 MATCH_EVENT_ACTIONS = ("MATCH START", "MATCH ENDED")
+PUBLIC_SERVER_NUMBER = "1"  # server 2 es el de entrenamiento, se ignora
 
 
 def _active_texts(mensajes) -> list:
@@ -67,6 +68,7 @@ def setup_auto_message_task(bot, pool):
                         log.warning(f"[auto_msg] No se pudo obtener historial ({action}): {e}")
                         continue
 
+                    entries = [e for e in entries if str(e.get("server")) == PUBLIC_SERVER_NUMBER]
                     if not entries:
                         continue
 

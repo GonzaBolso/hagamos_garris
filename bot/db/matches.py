@@ -1,6 +1,14 @@
 """db/matches.py — Queries SQL de partidas y stats de jugadores por partida."""
 import asyncpg
 
+# metric_key -> columna en match_player_stats
+MVP_METRIC_COLUMNS = {
+    "combat":  "combat_score",
+    "offense": "offense_score",
+    "defense": "defense_score",
+    "support": "support_score",
+}
+
 
 async def get_recent_matches_for_player(conn: asyncpg.Connection,
                                          steam_id: str, limit: int = 5) -> list:
@@ -153,6 +161,39 @@ async def fetch_leaderboard(conn: asyncpg.Connection, col: str,
         """,
         limit, desde, hasta,
     )
+
+
+async def get_match_top_players(conn: asyncpg.Connection, match_id: str) -> dict:
+    """
+    Devuelve el mejor jugador de cada categoria (combate/ataque/defensa/apoyo)
+    para cada lado (allies/axis) de una partida puntual.
+
+    Estructura: {"allies": {"combat": {"player_names": [...], "value": ...}, ...}, "axis": {...}}
+    player_names puede tener más de un nombre si hay empate en el puntaje máximo.
+    Un lado o categoria queda ausente si nadie de ese lado tuvo valor > 0
+    (o si el team vino como "unknown" para todos, ej. muy poca actividad).
+    """
+    rows = await conn.fetch(
+        """
+        SELECT player_name, team, combat_score, offense_score, defense_score, support_score
+        FROM match_player_stats
+        WHERE match_id = $1 AND team IN ('allies', 'axis')
+        """,
+        match_id,
+    )
+
+    result = {"allies": {}, "axis": {}}
+    for side in ("allies", "axis"):
+        side_rows = [r for r in rows if r["team"] == side]
+        if not side_rows:
+            continue
+        for metric_key, col in MVP_METRIC_COLUMNS.items():
+            max_value = max((r[col] or 0) for r in side_rows)
+            if max_value > 0:
+                top_names = [r["player_name"] for r in side_rows if (r[col] or 0) == max_value]
+                result[side][metric_key] = {"player_names": top_names, "value": max_value}
+
+    return result
 
 
 async def get_player_rank(conn: asyncpg.Connection, steam_id: str, col: str):

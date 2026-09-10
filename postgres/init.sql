@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS match_player_stats (
     death_by            JSONB DEFAULT '{}',
     most_killed_ids     JSONB DEFAULT '{}',
     death_by_ids        JSONB DEFAULT '{}',
+    team                VARCHAR(10),
     UNIQUE (match_id, steam_id)
 );
 
@@ -65,6 +66,7 @@ ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by         JSONB D
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS most_killed_ids  JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS death_by_ids     JSONB DEFAULT '{}';
 ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS vehicles_destroyed INT DEFAULT 0;
+ALTER TABLE match_player_stats ADD COLUMN IF NOT EXISTS team              VARCHAR(10);
 
 -- ── Vista: stats acumulados ───────────────────────────────────
 CREATE OR REPLACE VIEW player_totals AS
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS guild_config (
     seed_threshold           INT DEFAULT 40,
     seed_last_notified       TIMESTAMPTZ,
     snapshot_last_fired      DATE,
+    match_announce_activo    BOOLEAN DEFAULT TRUE,
     language                 VARCHAR(5) DEFAULT 'es',
     created_at               TIMESTAMPTZ DEFAULT NOW(),
     updated_at               TIMESTAMPTZ DEFAULT NOW()
@@ -119,6 +122,7 @@ ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_channel_id          BIGIN
 ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_threshold           INT DEFAULT 40;
 ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS seed_last_notified       TIMESTAMPTZ;
 ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS snapshot_last_fired      DATE;
+ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS match_announce_activo    BOOLEAN DEFAULT TRUE;
 
 -- ── Eventos detectados en vivo ────────────────────────────────
 CREATE TABLE IF NOT EXISTS detected_events (
