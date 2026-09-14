@@ -7,6 +7,7 @@ MVP_METRIC_COLUMNS = {
     "offense": "offense_score",
     "defense": "defense_score",
     "support": "support_score",
+    "kills":   "kills",
 }
 
 
@@ -165,7 +166,7 @@ async def fetch_leaderboard(conn: asyncpg.Connection, col: str,
 
 async def get_match_top_players(conn: asyncpg.Connection, match_id: str) -> dict:
     """
-    Devuelve el mejor jugador de cada categoria (combate/ataque/defensa/apoyo)
+    Devuelve el mejor jugador de cada categoria (combate/ataque/defensa/apoyo/kills)
     para cada lado (allies/axis) de una partida puntual.
 
     Estructura: {"allies": {"combat": {"player_names": [...], "value": ...}, ...}, "axis": {...}}
@@ -175,7 +176,7 @@ async def get_match_top_players(conn: asyncpg.Connection, match_id: str) -> dict
     """
     rows = await conn.fetch(
         """
-        SELECT player_name, team, combat_score, offense_score, defense_score, support_score
+        SELECT player_name, team, combat_score, offense_score, defense_score, support_score, kills
         FROM match_player_stats
         WHERE match_id = $1 AND team IN ('allies', 'axis')
         """,

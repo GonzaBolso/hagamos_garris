@@ -145,6 +145,24 @@ Disparo manual: `/hlladmin snapshot periodo:Día`
 
 ---
 
+## Anuncios de partida
+
+Manda mensajes automáticos al **canal de eventos** (`canal_eventos`, configurado con `/hlladmin setchannel`) cuando arranca y cuando termina una partida en el servidor público:
+
+- **Inicio:** el mapa que arrancó.
+- **Fin:** resultado y mapa. Los empates (2-2) se omiten — normalmente significan que el mapa llegó al límite de tiempo sin actividad real, no que se jugó de verdad.
+- **MVPs:** unos minutos después del resultado, un mensaje aparte con el mejor jugador de cada categoría (combate, ataque, defensa, apoyo) para cada bando — depende de que CRCON haya terminado de indexar el scoreboard de esa partida; si tarda demasiado o la partida tuvo muy poca actividad (nadie con equipo determinado), se omite sin trabar el resto.
+
+Solo reacciona a eventos del **servidor público** (server 1) — el de entrenamiento (server 2) se ignora acá y también en los mensajes automáticos in-game (`/hlladmin mensajes`).
+
+Se puede desactivar por servidor de Discord sin tocar código ni reiniciar el bot:
+
+```sql
+UPDATE guild_config SET match_announce_activo = FALSE WHERE guild_id = <id>;
+```
+
+---
+
 ## Notificaciones de estado
 
 El bot y el collector pueden notificar errores y eventos (conectado/desconectado) a un canal de Discord via webhook.

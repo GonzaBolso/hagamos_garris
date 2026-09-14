@@ -37,10 +37,11 @@ MATCH_START_RE = re.compile(r"MATCH START (.+)")
 MATCH_ENDED_RE = re.compile(r"MATCH ENDED `(.+?)` ALLIED \((\d+) - (\d+)\) AXIS")
 
 CATEGORY_LABELS = (
-    ("combat",  "🔥 Combate"),
-    ("offense", "⚔️ Ataque"),
-    ("defense", "🛡️ Defensa"),
-    ("support", "🤝 Apoyo"),
+    ("combat",  "🔥 Combate",  "pts"),
+    ("offense", "⚔️ Ataque",   "pts"),
+    ("defense", "🛡️ Defensa",  "pts"),
+    ("support", "🤝 Apoyo",    "pts"),
+    ("kills",   "💀 Kills",    "k"),
 )
 
 
@@ -52,10 +53,10 @@ def _format_names(names: list) -> str:
 
 def _format_side(top: dict, side_label: str) -> str:
     lines = []
-    for key, label in CATEGORY_LABELS:
+    for key, label, unit in CATEGORY_LABELS:
         entry = top.get(key)
         if entry:
-            lines.append(f"{label}: **{_format_names(entry['player_names'])}** ({entry['value']} pts)")
+            lines.append(f"{label}: **{_format_names(entry['player_names'])}** ({entry['value']} {unit})")
         else:
             lines.append(f"{label}: sin datos")
     return f"**{side_label}**\n" + "\n".join(lines)
@@ -114,15 +115,15 @@ def setup_match_announce_task(bot, pool, crcon_client):
     async def _get_announce_channels(conn):
         return await conn.fetch(
             """
-            SELECT guild_id, seed_channel_id FROM guild_config
-            WHERE seed_channel_id IS NOT NULL
+            SELECT guild_id, eventos_channel_id FROM guild_config
+            WHERE eventos_channel_id IS NOT NULL
               AND COALESCE(match_announce_activo, TRUE) = TRUE
             """
         )
 
     async def _send_to_all(rows, text: str):
         for row in rows:
-            channel_id = row["seed_channel_id"]
+            channel_id = row["eventos_channel_id"]
             channel = bot.get_channel(channel_id)
             if channel is None:
                 try:
