@@ -54,13 +54,15 @@ def build_server_state_from_public_info(info: dict, slots: dict) -> dict:
     score   = (info or {}).get("score") or {}
     by_team = (info or {}).get("player_count_by_team") or {}
     name_info   = (info or {}).get("name") or {}
-    vote_status = (info or {}).get("vote_status") or []
+    vote_status = (info or {}).get("vote_status") or {}
+    vote_results = vote_status.get("results") if isinstance(vote_status, dict) else []
     votes = [
         {
-            "map_name": v.get("map", {}).get("pretty_name", "?") if isinstance(v, dict) else str(v),
-            "votes":    len(v.get("voters") or []) if isinstance(v, dict) else 0,
+            "map_name": r.get("map", {}).get("pretty_name", "?"),
+            "votes":    r.get("votes_count") or len(r.get("voters") or []),
         }
-        for v in vote_status
+        for r in (vote_results or [])
+        if isinstance(r, dict)
     ]
     return {
         "current_map":        current_map_data.get("pretty_name", "?"),
